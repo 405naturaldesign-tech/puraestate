@@ -1,0 +1,260 @@
+{
+  "name": "PuraEstate - Market Summary Report",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "cron-weekly",
+      "name": "Weekly Monday 7AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 200]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-daily",
+      "name": "Daily 7AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 400]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  COUNT(*) AS total_active,\n  COUNT(CASE WHEN created_at >= CURRENT_DATE - INTERVAL '7 days' THEN 1 END) AS new_this_week,\n  COUNT(CASE WHEN created_at >= CURRENT_DATE - INTERVAL '1 day' THEN 1 END) AS new_today,\n  ROUND(AVG(price)::numeric, 0) AS avg_price,\n  ROUND(AVG(CASE WHEN created_at >= CURRENT_DATE - INTERVAL '7 days' THEN price END)::numeric, 0) AS avg_price_this_week,\n  MIN(price) AS min_price,\n  MAX(price) AS max_price,\n  PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price) AS median_price,\n  COUNT(DISTINCT province) AS provinces_covered,\n  COUNT(DISTINCT city) AS cities_covered\nFROM properties\nWHERE status = 'active' AND price > 0;",
+        "options": {}
+      },
+      "id": "postgres-overall-stats",
+      "name": "Get Overall Stats",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  province,\n  COUNT(*) AS listings,\n  ROUND(AVG(price)::numeric, 0) AS avg_price,\n  ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price)::numeric, 0) AS median_price,\n  MIN(price) AS min_price,\n  MAX(price) AS max_price,\n  COUNT(CASE WHEN created_at >= CURRENT_DATE - INTERVAL '7 days' THEN 1 END) AS new_this_week\nFROM properties\nWHERE status = 'active' AND price > 0 AND province IS NOT NULL AND province != ''\nGROUP BY province\nORDER BY listings DESC\nLIMIT 10;",
+        "options": {}
+      },
+      "id": "postgres-by-province",
+      "name": "Stats by Province",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 380],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  property_type,\n  COUNT(*) AS count,\n  ROUND(AVG(price)::numeric, 0) AS avg_price,\n  ROUND(AVG(bedrooms)::numeric, 1) AS avg_bedrooms,\n  ROUND(AVG(size_sqm)::numeric, 1) AS avg_size\nFROM properties\nWHERE status = 'active' AND price > 0\nGROUP BY property_type\nORDER BY count DESC;",
+        "options": {}
+      },
+      "id": "postgres-by-type",
+      "name": "Stats by Property Type",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 560],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  source,\n  COUNT(*) AS listings,\n  COUNT(CASE WHEN created_at >= CURRENT_DATE - INTERVAL '7 days' THEN 1 END) AS added_this_week,\n  MAX(scraped_at) AS last_scraped\nFROM properties\nWHERE status = 'active'\nGROUP BY source\nORDER BY listings DESC;",
+        "options": {}
+      },
+      "id": "postgres-by-source",
+      "name": "Stats by Source",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 740],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const overall = $('Get Overall Stats').first().json;\nconst byProvince = $('Stats by Province').all().map(i => i.json);\nconst byType = $('Stats by Property Type').all().map(i => i.json);\nconst bySource = $('Stats by Source').all().map(i => i.json);\n\nconst reportDate = new Date().toLocaleDateString('en-ZA', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });\nconst weekStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toLocaleDateString('en-ZA');\nconst weekEnd = new Date().toLocaleDateString('en-ZA');\n\n// Format currency\nconst fmt = (n) => 'R ' + Number(n).toLocaleString('en-ZA', { maximumFractionDigits: 0 });\n\nconst slackMessage = [\n  `*PuraEstate Weekly Market Summary*`,\n  `${weekStart} - ${weekEnd}`,\n  ``,\n  `*Overall Market*`,\n  `• Total Active Listings: ${Number(overall.total_active).toLocaleString()}`,\n  `• New This Week: ${Number(overall.new_this_week).toLocaleString()}`,\n  `• New Today: ${Number(overall.new_today).toLocaleString()}`,\n  `• Average Price: ${fmt(overall.avg_price)}`,\n  `• Median Price: ${fmt(overall.median_price)}`,\n  `• Price Range: ${fmt(overall.min_price)} - ${fmt(overall.max_price)}`,\n  `• Provinces: ${overall.provinces_covered} | Cities: ${overall.cities_covered}`,\n  ``,\n  `*By Province (Top 5)*`,\n  ...byProvince.slice(0, 5).map(p => \n    `• ${p.province}: ${p.listings} listings | Avg ${fmt(p.avg_price)} | +${p.new_this_week} this week`\n  ),\n  ``,\n  `*By Property Type*`,\n  ...byType.map(t => \n    `• ${t.property_type}: ${t.count} listings | Avg ${fmt(t.avg_price)}`\n  )\n].join('\\n');\n\nconst emailHtml = `\n<!DOCTYPE html>\n<html>\n<head><style>\nbody{font-family:Georgia,serif;color:#333;margin:0;background:#f9f9f9;}\n.container{max-width:700px;margin:0 auto;background:white;}\n.header{background:linear-gradient(135deg,#1a472a 0%,#2d6a4f 100%);color:white;padding:40px 30px;text-align:center;}\n.header h1{margin:0;font-size:28px;letter-spacing:1px;}\n.header .subtitle{opacity:0.85;margin:8px 0 0;font-size:14px;}\n.section{padding:25px 30px;border-bottom:1px solid #eee;}\n.section h2{color:#1a472a;font-size:18px;margin:0 0 15px;padding-bottom:8px;border-bottom:2px solid #e8f5e9;}\n.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin:15px 0;}\n.stat{background:#f0f7f4;border-radius:8px;padding:15px;text-align:center;}\n.stat .number{font-size:22px;font-weight:bold;color:#1a472a;}\n.stat .label{font-size:12px;color:#666;margin-top:4px;}\n.province-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f5f5f5;}\n.province-name{font-weight:bold;color:#1a472a;}\n.badge{background:#e8f5e9;color:#1a472a;padding:2px 8px;border-radius:10px;font-size:11px;}\nfooter{background:#1a472a;color:white;padding:20px;text-align:center;font-size:12px;}\n</style></head>\n<body>\n<div class=\"container\">\n<div class=\"header\">\n  <h1>PuraEstate Market Summary</h1>\n  <div class=\"subtitle\">${weekStart} - ${weekEnd}</div>\n</div>\n\n<div class=\"section\">\n  <h2>Overall Market</h2>\n  <div class=\"stat-grid\">\n    <div class=\"stat\"><div class=\"number\">${Number(overall.total_active).toLocaleString()}</div><div class=\"label\">Active Listings</div></div>\n    <div class=\"stat\"><div class=\"number\">${Number(overall.new_this_week).toLocaleString()}</div><div class=\"label\">New This Week</div></div>\n    <div class=\"stat\"><div class=\"number\">${fmt(overall.median_price)}</div><div class=\"label\">Median Price</div></div>\n    <div class=\"stat\"><div class=\"number\">${fmt(overall.avg_price)}</div><div class=\"label\">Average Price</div></div>\n    <div class=\"stat\"><div class=\"number\">${overall.provinces_covered}</div><div class=\"label\">Provinces</div></div>\n    <div class=\"stat\"><div class=\"number\">${overall.cities_covered}</div><div class=\"label\">Cities</div></div>\n  </div>\n</div>\n\n<div class=\"section\">\n  <h2>By Province</h2>\n  ${byProvince.map(p => `\n  <div class=\"province-row\">\n    <span class=\"province-name\">${p.province}</span>\n    <span>${p.listings} listings</span>\n    <span>${fmt(p.avg_price)} avg</span>\n    <span class=\"badge\">+${p.new_this_week} new</span>\n  </div>`).join('')}\n</div>\n\n<div class=\"section\">\n  <h2>By Property Type</h2>\n  ${byType.map(t => `\n  <div class=\"province-row\">\n    <span class=\"province-name\" style=\"text-transform:capitalize\">${t.property_type}</span>\n    <span>${t.count} listings</span>\n    <span>${fmt(t.avg_price)} avg</span>\n    <span>${t.avg_bedrooms > 0 ? t.avg_bedrooms + ' avg beds' : ''}</span>\n  </div>`).join('')}\n</div>\n\n<div class=\"section\">\n  <h2>Data Sources</h2>\n  ${bySource.map(s => `\n  <div class=\"province-row\">\n    <span class=\"province-name\">${s.source}</span>\n    <span>${s.listings} total</span>\n    <span class=\"badge\">+${s.added_this_week} this week</span>\n  </div>`).join('')}\n</div>\n\n<footer>PuraEstate Intelligence Platform | ${reportDate}</footer>\n</div>\n</body></html>`;\n\nreturn [{\n  json: {\n    report_date: reportDate,\n    week_start: weekStart,\n    week_end: weekEnd,\n    overall,\n    by_province: byProvince,\n    by_type: byType,\n    by_source: bySource,\n    slack_message: slackMessage,\n    email_html: emailHtml\n  }\n}];"
+      },
+      "id": "code-build-report",
+      "name": "Build Market Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 460]
+    },
+    {
+      "parameters": {
+        "channel": "#market-reports",
+        "text": "={{ $json.slack_message }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "slack-market-report",
+      "name": "Post to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [920, 360],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-puraestate",
+          "name": "PuraEstate Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.STAKEHOLDER_EMAILS }}",
+        "subject": "PuraEstate Weekly Market Summary - {{ $json.week_start }} to {{ $json.week_end }}",
+        "emailFormat": "html",
+        "message": "={{ $json.email_html }}",
+        "options": {}
+      },
+      "id": "email-market-report",
+      "name": "Email to Stakeholders",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [920, 540],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-puraestate",
+          "name": "PuraEstate SMTP"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Weekly Monday 7AM": {
+      "main": [
+        [
+          {
+            "node": "Get Overall Stats",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Stats by Province",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Stats by Property Type",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Stats by Source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Overall Stats": {
+      "main": [
+        [
+          {
+            "node": "Build Market Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stats by Province": {
+      "main": [
+        [
+          {
+            "node": "Build Market Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stats by Property Type": {
+      "main": [
+        [
+          {
+            "node": "Build Market Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stats by Source": {
+      "main": [
+        [
+          {
+            "node": "Build Market Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Market Report": {
+      "main": [
+        [
+          {
+            "node": "Post to Slack",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Email to Stakeholders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["alerts", "reports", "market-summary", "puraestate"],
+  "triggerCount": 2,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}

@@ -1,0 +1,201 @@
+{
+  "name": "PuraEstate - Webhook Listing Ingestion",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "puraestate/listings/ingest",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "webhook-trigger",
+      "name": "Listing Ingestion Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "webhookId": "puraestate-listing-ingest-001"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst headers = $input.first().json.headers || {};\n\n// Validate API key\nconst apiKey = headers['x-api-key'] || headers['authorization']?.replace('Bearer ', '');\nconst validKeys = [\n  process.env.WEBHOOK_API_KEY_1,\n  process.env.WEBHOOK_API_KEY_2,\n  process.env.WEBHOOK_API_KEY_3\n].filter(Boolean);\n\nif (validKeys.length > 0 && !validKeys.includes(apiKey)) {\n  return [{ json: { valid: false, error: 'Invalid API key', code: 401 } }];\n}\n\n// Validate required fields\nconst required = ['title', 'price', 'property_type'];\nconst missing = required.filter(f => !body[f]);\n\nif (missing.length > 0) {\n  return [{ json: { valid: false, error: `Missing required fields: ${missing.join(', ')}`, code: 400 } }];\n}\n\n// Sanitize and normalize\nconst listing = {\n  valid: true,\n  listing_id: body.listing_id || `webhook_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,\n  title: String(body.title || '').substring(0, 255),\n  price: parseFloat(body.price) || 0,\n  price_currency: body.price_currency || 'ZAR',\n  bedrooms: parseInt(body.bedrooms) || 0,\n  bathrooms: parseInt(body.bathrooms) || 0,\n  property_type: String(body.property_type || 'unknown').toLowerCase(),\n  suburb: String(body.suburb || '').substring(0, 100),\n  city: String(body.city || '').substring(0, 100),\n  province: String(body.province || '').substring(0, 100),\n  size_sqm: parseFloat(body.size_sqm) || 0,\n  url: String(body.url || '').substring(0, 500),\n  source: String(body.source || 'webhook').substring(0, 50),\n  description: String(body.description || '').substring(0, 5000),\n  agent_name: String(body.agent_name || '').substring(0, 100),\n  agent_phone: String(body.agent_phone || '').substring(0, 20),\n  agent_email: String(body.agent_email || '').substring(0, 100),\n  images: Array.isArray(body.images) ? body.images.slice(0, 20) : [],\n  features: body.features || {},\n  latitude: parseFloat(body.latitude) || null,\n  longitude: parseFloat(body.longitude) || null,\n  received_at: new Date().toISOString(),\n  status: 'active'\n};\n\n// Validate price range\nif (listing.price < 0 || listing.price > 500000000) {\n  return [{ json: { valid: false, error: 'Price out of valid range (0 - 500,000,000)', code: 400 } }];\n}\n\nreturn [{ json: listing }];"
+      },
+      "id": "code-validate",
+      "name": "Validate & Normalize Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-valid",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-valid",
+      "name": "Valid Payload?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO properties (\n  listing_id, title, price, price_currency, bedrooms, bathrooms,\n  property_type, suburb, city, province, size_sqm, url, source,\n  description, agent_name, agent_phone, images, features,\n  latitude, longitude, scraped_at, status\n)\nVALUES (\n  '{{ $json.listing_id }}',\n  '{{ $json.title.replace(/'/g, \"''\") }}',\n  {{ $json.price }},\n  '{{ $json.price_currency }}',\n  {{ $json.bedrooms }},\n  {{ $json.bathrooms }},\n  '{{ $json.property_type }}',\n  '{{ $json.suburb }}',\n  '{{ $json.city }}',\n  '{{ $json.province }}',\n  {{ $json.size_sqm }},\n  '{{ $json.url }}',\n  '{{ $json.source }}',\n  '{{ $json.description.replace(/'/g, \"''\") }}',\n  '{{ $json.agent_name }}',\n  '{{ $json.agent_phone }}',\n  '{{ JSON.stringify($json.images) }}',\n  '{{ JSON.stringify($json.features) }}',\n  {{ $json.latitude || 'NULL' }},\n  {{ $json.longitude || 'NULL' }},\n  '{{ $json.received_at }}',\n  '{{ $json.status }}'\n)\nON CONFLICT (listing_id) DO UPDATE SET\n  price = EXCLUDED.price,\n  status = EXCLUDED.status,\n  scraped_at = EXCLUDED.scraped_at,\n  description = EXCLUDED.description\nRETURNING id, listing_id, title, price, created_at;",
+        "options": {}
+      },
+      "id": "postgres-upsert-webhook",
+      "name": "Upsert Property",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [900, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, id: $json.id, listing_id: $json.listing_id, message: 'Listing received and stored successfully' }) }}",
+        "options": {
+          "responseCode": 201
+        }
+      },
+      "id": "respond-success",
+      "name": "Respond 201 Created",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1120, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: $json.error, code: $json.code }) }}",
+        "options": {
+          "responseCode": "={{ $json.code || 400 }}"
+        }
+      },
+      "id": "respond-error",
+      "name": "Respond 400 Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [900, 420]
+    },
+    {
+      "parameters": {
+        "channel": "#webhook-ingestion",
+        "text": "=*New Webhook Listing* :satellite:\n*{{ $('Validate & Normalize Payload').item.json.title }}*\nSource: {{ $('Validate & Normalize Payload').item.json.source }}\nPrice: R{{ $('Validate & Normalize Payload').item.json.price.toLocaleString() }}\nLocation: {{ $('Validate & Normalize Payload').item.json.city }}, {{ $('Validate & Normalize Payload').item.json.province }}\nID: {{ $json.listing_id }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "slack-webhook-notify",
+      "name": "Notify Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [1340, 200],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-puraestate",
+          "name": "PuraEstate Slack"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Listing Ingestion Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate & Normalize Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Normalize Payload": {
+      "main": [
+        [
+          {
+            "node": "Valid Payload?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid Payload?": {
+      "main": [
+        [
+          {
+            "node": "Upsert Property",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400 Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Property": {
+      "main": [
+        [
+          {
+            "node": "Respond 201 Created",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond 201 Created": {
+      "main": [
+        [
+          {
+            "node": "Notify Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["data-collection", "webhook", "ingestion", "puraestate"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}

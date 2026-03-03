@@ -1,0 +1,96 @@
+# =============================================================================
+# PuraEstate – Celery Worker Dockerfile (Production Multi-Stage)
+# =============================================================================
+# Shares the same Python environment as the Flask backend but starts the
+# Celery worker process instead of Gunicorn.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Stage 1: Builder (identical to backend builder stage)
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        libpq-dev \
+        libssl-dev \
+        libffi-dev \
+        gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+COPY requirements_backend.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Flower – Celery monitoring tool (installed in worker image so it can be
+# run from the same image or as a dedicated service)
+RUN pip install --no-cache-dir flower==2.0.1
+
+# ---------------------------------------------------------------------------
+# Stage 2: Runtime
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS runtime
+
+LABEL maintainer="PuraEstate <devops@puraestate.com>"
+LABEL org.opencontainers.image.title="PuraEstate Celery Worker"
+LABEL org.opencontainers.image.description="Celery async task worker for PuraEstate SaaS"
+LABEL org.opencontainers.image.version="1.0.0"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpq5 \
+        curl \
+        ca-certificates \
+        tini \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN groupadd --gid 1001 appgroup && \
+    useradd --uid 1001 --gid appgroup --shell /bin/bash --create-home appuser
+
+WORKDIR /app
+
+COPY --chown=appuser:appgroup . .
+
+RUN mkdir -p /app/logs /tmp/uploads && \
+    chown -R appuser:appgroup /app /tmp/uploads
+
+USER appuser
+
+# Celery worker environment defaults
+ENV FLASK_ENV=production \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONFAULTHANDLER=1 \
+    C_FORCE_ROOT=0 \
+    CELERY_APP=celery_worker:celery_app \
+    CELERY_CONCURRENCY=4 \
+    CELERY_LOGLEVEL=info \
+    CELERY_QUEUES=default,emails,reports,notifications
+
+# Celery worker does not expose a port by default.
+# Flower monitoring is exposed if this container runs in flower mode.
+EXPOSE 5555
+
+# Health check – Celery ping
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD celery -A ${CELERY_APP} inspect ping -d celery@$HOSTNAME || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+# Default command: start Celery worker
+# Override CMD in docker-compose to run Flower instead
+CMD ["sh", "-c", "celery -A ${CELERY_APP} worker \
+    --loglevel=${CELERY_LOGLEVEL} \
+    --concurrency=${CELERY_CONCURRENCY} \
+    --queues=${CELERY_QUEUES} \
+    --hostname=worker@%h \
+    --without-gossip \
+    --without-mingle \
+    --without-heartbeat \
+    -Ofair"]

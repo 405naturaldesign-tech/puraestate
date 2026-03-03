@@ -1,0 +1,33 @@
+# =============================================================================
+# PuraEstate – .dockerignore for the deploy/ context (nginx image)
+# =============================================================================
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Secrets & environment
+.env
+.env.*
+secrets/
+
+# Documentation
+*.md
+DEPLOYMENT_GUIDE.md
+
+# SSL certs (mounted at runtime)
+nginx/ssl/
+letsencrypt/
+
+# Scripts (not needed inside nginx image)
+scripts/
+postgres-init/
+
+# Editor / OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/

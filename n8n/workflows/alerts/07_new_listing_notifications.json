@@ -1,0 +1,251 @@
+{
+  "name": "PuraEstate - New Listing Notifications",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8,12,17 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-new-listings",
+      "name": "3x Daily (8am, 12pm, 5pm)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  p.*,\n  p.id AS property_id\nFROM properties p\nWHERE p.created_at >= NOW() - INTERVAL '6 hours'\nAND p.status = 'active'\nORDER BY p.created_at DESC\nLIMIT 100;",
+        "options": {}
+      },
+      "id": "postgres-new-props",
+      "name": "Get New Properties (last 6h)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-new",
+              "leftValue": "={{ $input.all().length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-new",
+      "name": "New Listings Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  ss.id,\n  ss.user_email,\n  ss.user_name,\n  ss.user_phone,\n  ss.max_price,\n  ss.min_price,\n  ss.min_bedrooms,\n  ss.max_bedrooms,\n  ss.province_filter,\n  ss.city_filter,\n  ss.property_type_filter,\n  ss.notify_email,\n  ss.notify_sms,\n  ss.notify_whatsapp,\n  ss.search_name\nFROM saved_searches ss\nWHERE ss.active = true\nAND ss.notify_new_listings = true;",
+        "options": {}
+      },
+      "id": "postgres-saved-searches",
+      "name": "Get Active Saved Searches",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [900, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const search = $('Get Active Saved Searches').item.json;\nconst newProperties = $('Get New Properties (last 6h)').all().map(i => i.json);\n\n// Match properties against saved search criteria\nconst matches = newProperties.filter(prop => {\n  if (search.max_price && prop.price > search.max_price) return false;\n  if (search.min_price && prop.price < search.min_price) return false;\n  if (search.min_bedrooms && prop.bedrooms < search.min_bedrooms) return false;\n  if (search.max_bedrooms && prop.bedrooms > search.max_bedrooms) return false;\n  if (search.province_filter && search.province_filter !== 'all' && prop.province !== search.province_filter) return false;\n  if (search.city_filter && search.city_filter !== 'all' && !prop.city.toLowerCase().includes(search.city_filter.toLowerCase())) return false;\n  if (search.property_type_filter && search.property_type_filter !== 'all' && prop.property_type !== search.property_type_filter) return false;\n  return true;\n});\n\nif (matches.length === 0) return [];\n\nconst time = new Date().toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' });\n\nconst emailHtml = `\n<!DOCTYPE html>\n<html>\n<head><style>\nbody{font-family:Arial,sans-serif;color:#333;margin:0;padding:0;}\n.header{background:linear-gradient(135deg,#1a472a,#2d6a4f);color:white;padding:30px;text-align:center;}\n.header h1{margin:0;font-size:24px;}\n.header p{margin:5px 0 0;opacity:0.9;}\n.content{padding:20px;}\n.property{border:1px solid #e0e0e0;border-radius:10px;margin:15px 0;padding:20px;transition:box-shadow 0.2s;}\n.property-title{font-size:18px;font-weight:bold;color:#1a472a;margin:0 0 8px;}\n.price{font-size:24px;font-weight:bold;color:#2d6a4f;margin:8px 0;}\n.details{color:#666;font-size:14px;margin:5px 0;}\n.tag{background:#e8f5e9;color:#1a472a;padding:3px 10px;border-radius:12px;font-size:12px;display:inline-block;margin:2px;}\n.cta{background:#1a472a;color:white;padding:12px 25px;text-decoration:none;border-radius:6px;display:inline-block;margin-top:12px;font-weight:bold;}\n.footer{background:#f5f5f5;padding:20px;text-align:center;color:#999;font-size:12px;}\n</style></head>\n<body>\n<div class=\"header\">\n  <h1>New Listings Alert</h1>\n  <p>${matches.length} new propert${matches.length === 1 ? 'y' : 'ies'} matching \"${search.search_name}\"</p>\n</div>\n<div class=\"content\">\n  <p>Hi ${search.user_name || 'there'}, here are the latest listings matching your saved search.</p>\n${matches.slice(0, 8).map(prop => `\n  <div class=\"property\">\n    <div class=\"property-title\">${prop.title}</div>\n    <div class=\"price\">R ${Number(prop.price).toLocaleString()}</div>\n    <div class=\"details\">\n      <span class=\"tag\">${prop.bedrooms} Bedrooms</span>\n      <span class=\"tag\">${prop.bathrooms} Bathrooms</span>\n      <span class=\"tag\">${prop.property_type}</span>\n    </div>\n    <div class=\"details\">${prop.suburb ? prop.suburb + ', ' : ''}${prop.city}, ${prop.province}</div>\n    <div class=\"details\">${prop.size_sqm > 0 ? prop.size_sqm + ' m²' : ''}</div>\n    <a href=\"${prop.url}\" class=\"cta\">View Property</a>\n  </div>\n`).join('')}\n</div>\n<div class=\"footer\">\n  <p>You're receiving this because of your saved search on PuraEstate.</p>\n  <p><a href=\"https://puraestate.co.za/saved-searches/${search.id}/unsubscribe\">Unsubscribe</a> | <a href=\"https://puraestate.co.za/saved-searches\">Manage Alerts</a></p>\n</div>\n</body></html>`;\n\nconst smsText = `PuraEstate: ${matches.length} new listing${matches.length > 1 ? 's' : ''} for \"${search.search_name}\". Top pick: ${matches[0].title} - R${Number(matches[0].price).toLocaleString()} in ${matches[0].city}. Visit puraestate.co.za`;\n\nreturn [{\n  json: {\n    search_id: search.id,\n    user_email: search.user_email,\n    user_name: search.user_name,\n    user_phone: search.user_phone,\n    notify_email: search.notify_email,\n    notify_sms: search.notify_sms,\n    notify_whatsapp: search.notify_whatsapp,\n    search_name: search.search_name,\n    matches_count: matches.length,\n    email_html: emailHtml,\n    sms_text: smsText,\n    subject: `${matches.length} new listing${matches.length > 1 ? 's' : ''} for \"${search.search_name}\"`\n  }\n}];"
+      },
+      "id": "code-match-search",
+      "name": "Match Properties to Saved Searches",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 200]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.user_email }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "html",
+        "message": "={{ $json.email_html }}",
+        "options": {}
+      },
+      "id": "email-new-listings",
+      "name": "Send New Listings Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1340, 100],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-puraestate",
+          "name": "PuraEstate SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://api.twilio.com/2010-04-01/Accounts/{{ $env.TWILIO_ACCOUNT_SID }}/Messages.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "From",
+              "value": "={{ $env.TWILIO_PHONE_NUMBER }}"
+            },
+            {
+              "name": "To",
+              "value": "={{ $json.user_phone }}"
+            },
+            {
+              "name": "Body",
+              "value": "={{ $json.sms_text }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-sms",
+      "name": "Send SMS via Twilio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO notification_log (search_id, user_email, notification_type, matches_count, sent_at)\nVALUES (\n  '{{ $('Match Properties to Saved Searches').item.json.search_id }}',\n  '{{ $('Match Properties to Saved Searches').item.json.user_email }}',\n  'new_listings',\n  {{ $('Match Properties to Saved Searches').item.json.matches_count }},\n  NOW()\n);",
+        "options": {}
+      },
+      "id": "postgres-log-notification",
+      "name": "Log Notification Sent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1560, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "3x Daily (8am, 12pm, 5pm)": {
+      "main": [
+        [
+          {
+            "node": "Get New Properties (last 6h)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get New Properties (last 6h)": {
+      "main": [
+        [
+          {
+            "node": "New Listings Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New Listings Found?": {
+      "main": [
+        [
+          {
+            "node": "Get Active Saved Searches",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Get Active Saved Searches": {
+      "main": [
+        [
+          {
+            "node": "Match Properties to Saved Searches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match Properties to Saved Searches": {
+      "main": [
+        [
+          {
+            "node": "Send New Listings Email",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send SMS via Twilio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send New Listings Email": {
+      "main": [
+        [
+          {
+            "node": "Log Notification Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["alerts", "notifications", "new-listings", "puraestate"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}

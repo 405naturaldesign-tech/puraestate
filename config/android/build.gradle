@@ -1,0 +1,79 @@
+buildscript {
+    ext {
+        buildToolsVersion = "34.0.0"
+        minSdkVersion = 24
+        compileSdkVersion = 34
+        targetSdkVersion = 34
+        androidXVersion = "1.13.0"
+        kotlinVersion = "1.9.22"
+    }
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath("com.android.tools.build:gradle:8.2.1")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion")
+        classpath("com.google.gms:google-services:4.4.0")
+        classpath("com.google.firebase:firebase-crashlytics-gradle:2.9.9")
+    }
+}
+
+allprojects {
+    repositories {
+        mavenLocal()
+        google()
+        mavenCentral()
+        maven {
+            url("$rootDir/../node_modules/jsc-android/dist")
+        }
+        maven {
+            url("$rootDir/../node_modules/expo-modules-core/android/maven")
+        }
+    }
+}
+
+// React Native specific configurations
+ext {
+    targetSdkVersion = 34
+    compileSdkVersion = 34
+    buildToolsVersion = "34.0.0"
+}
+
+subprojects {
+    afterEvaluate { project ->
+        if (project.plugins.hasPlugin("com.android.application") ||
+            project.plugins.hasPlugin("com.android.library")) {
+            android {
+                compileSdkVersion compileSdkVersion
+                buildToolsVersion buildToolsVersion
+
+                defaultConfig {
+                    targetSdkVersion targetSdkVersion
+                    minSdkVersion minSdkVersion
+                }
+
+                compileOptions {
+                    sourceCompatibility JavaVersion.VERSION_11
+                    targetCompatibility JavaVersion.VERSION_11
+                }
+
+                kotlinOptions {
+                    jvmTarget = "11"
+                }
+
+                packagingOptions {
+                    pickFirst "lib/x86/libc++_shared.so"
+                    pickFirst "lib/x86_64/libc++_shared.so"
+                    pickFirst "lib/arm64-v8a/libc++_shared.so"
+                    pickFirst "lib/armeabi-v7a/libc++_shared.so"
+                }
+
+                lintOptions {
+                    checkReleaseBuilds false
+                    abortOnError false
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,321 @@
+{
+  "name": "PuraEstate - Google Sheets Sync",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */4 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-sheets",
+      "name": "Every 4 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  p.listing_id,\n  p.title,\n  p.price,\n  p.bedrooms,\n  p.bathrooms,\n  p.property_type,\n  p.suburb,\n  p.city,\n  p.province,\n  p.size_sqm,\n  p.url,\n  p.source,\n  p.agent_name,\n  p.agent_phone,\n  p.status,\n  TO_CHAR(p.created_at, 'YYYY-MM-DD HH24:MI') AS created_at,\n  TO_CHAR(p.scraped_at, 'YYYY-MM-DD HH24:MI') AS scraped_at\nFROM properties p\nWHERE p.status = 'active'\nAND p.price > 0\nORDER BY p.created_at DESC\nLIMIT 1000;",
+        "options": {}
+      },
+      "id": "postgres-get-props",
+      "name": "Fetch All Active Properties",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "clear",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEET_ID_PROPERTIES }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Properties",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "sheets-clear",
+      "name": "Clear Existing Sheet Data",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [680, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-puraestate",
+          "name": "PuraEstate Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEET_ID_PROPERTIES }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Properties",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Listing ID": "={{ $json.listing_id }}",
+            "Title": "={{ $json.title }}",
+            "Price (ZAR)": "={{ $json.price }}",
+            "Bedrooms": "={{ $json.bedrooms }}",
+            "Bathrooms": "={{ $json.bathrooms }}",
+            "Type": "={{ $json.property_type }}",
+            "Suburb": "={{ $json.suburb }}",
+            "City": "={{ $json.city }}",
+            "Province": "={{ $json.province }}",
+            "Size (m2)": "={{ $json.size_sqm }}",
+            "URL": "={{ $json.url }}",
+            "Source": "={{ $json.source }}",
+            "Agent Name": "={{ $json.agent_name }}",
+            "Agent Phone": "={{ $json.agent_phone }}",
+            "Status": "={{ $json.status }}",
+            "Listed Date": "={{ $json.created_at }}",
+            "Last Scraped": "={{ $json.scraped_at }}"
+          }
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        }
+      },
+      "id": "sheets-append",
+      "name": "Write Properties to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [900, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-puraestate",
+          "name": "PuraEstate Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  province,\n  property_type,\n  COUNT(*) AS count,\n  ROUND(AVG(price)::numeric, 0) AS avg_price,\n  MIN(price) AS min_price,\n  MAX(price) AS max_price,\n  ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price)::numeric, 0) AS median_price,\n  ROUND(AVG(bedrooms)::numeric, 1) AS avg_beds,\n  TO_CHAR(NOW(), 'YYYY-MM-DD HH24:MI') AS updated_at\nFROM properties\nWHERE status = 'active' AND price > 0\nGROUP BY province, property_type\nORDER BY province, count DESC;",
+        "options": {}
+      },
+      "id": "postgres-summary-stats",
+      "name": "Get Summary Stats",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [900, 500],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "clear",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEET_ID_PROPERTIES }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Summary",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "sheets-clear-summary",
+      "name": "Clear Summary Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [1120, 500],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-puraestate",
+          "name": "PuraEstate Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEET_ID_PROPERTIES }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Summary",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Province": "={{ $json.province }}",
+            "Property Type": "={{ $json.property_type }}",
+            "Count": "={{ $json.count }}",
+            "Avg Price": "={{ $json.avg_price }}",
+            "Min Price": "={{ $json.min_price }}",
+            "Max Price": "={{ $json.max_price }}",
+            "Median Price": "={{ $json.median_price }}",
+            "Avg Bedrooms": "={{ $json.avg_beds }}",
+            "Updated At": "={{ $json.updated_at }}"
+          }
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        }
+      },
+      "id": "sheets-write-summary",
+      "name": "Write Summary to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [1340, 500],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-puraestate",
+          "name": "PuraEstate Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "#integrations",
+        "text": "=*Google Sheets Sync Complete* :bar_chart:\nProperties synced: {{ $('Fetch All Active Properties').all().length }}\nSheet: <https://docs.google.com/spreadsheets/d/{{ $env.GOOGLE_SHEET_ID_PROPERTIES }}|Open Spreadsheet>\nUpdated: {{ new Date().toLocaleString('en-ZA') }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "slack-sheets-done",
+      "name": "Notify Sheets Sync Complete",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [1560, 400],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-puraestate",
+          "name": "PuraEstate Slack"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 4 Hours": {
+      "main": [
+        [
+          {
+            "node": "Fetch All Active Properties",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch All Active Properties": {
+      "main": [
+        [
+          {
+            "node": "Clear Existing Sheet Data",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Summary Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear Existing Sheet Data": {
+      "main": [
+        [
+          {
+            "node": "Write Properties to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Properties to Sheet": {
+      "main": [
+        [
+          {
+            "node": "Notify Sheets Sync Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Summary Stats": {
+      "main": [
+        [
+          {
+            "node": "Clear Summary Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear Summary Sheet": {
+      "main": [
+        [
+          {
+            "node": "Write Summary to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Summary to Sheet": {
+      "main": [
+        [
+          {
+            "node": "Notify Sheets Sync Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["integrations", "google-sheets", "sync", "puraestate"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}

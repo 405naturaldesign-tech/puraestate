@@ -1,0 +1,197 @@
+{
+  "name": "PuraEstate - Slack Daily Listings by Province",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "cron-slack-daily",
+      "name": "Weekdays 8AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  province,\n  property_type,\n  COUNT(*) AS count,\n  ROUND(AVG(price)::numeric, 0) AS avg_price,\n  MIN(price) AS min_price,\n  MAX(price) AS max_price,\n  COUNT(CASE WHEN bedrooms >= 3 THEN 1 END) AS family_homes\nFROM properties\nWHERE status = 'active'\nAND price > 0\nAND created_at >= CURRENT_DATE - INTERVAL '1 day'\nGROUP BY province, property_type\nORDER BY province, count DESC;",
+        "options": {}
+      },
+      "id": "postgres-daily-breakdown",
+      "name": "Get Yesterday's New Listings",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  listing_id,\n  title,\n  price,\n  bedrooms,\n  bathrooms,\n  property_type,\n  suburb,\n  city,\n  province,\n  url\nFROM properties\nWHERE status = 'active'\nAND price > 0\nAND created_at >= CURRENT_DATE - INTERVAL '1 day'\nORDER BY created_at DESC\nLIMIT 10;",
+        "options": {}
+      },
+      "id": "postgres-top-listings",
+      "name": "Get Top New Listings",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 500],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const breakdown = $('Get Yesterday\\'s New Listings').all().map(i => i.json);\nconst topListings = $('Get Top New Listings').all().map(i => i.json);\n\n// Group by province\nconst byProvince = {};\nbreakdown.forEach(row => {\n  if (!byProvince[row.province]) {\n    byProvince[row.province] = { province: row.province, types: [], total: 0 };\n  }\n  byProvince[row.province].types.push(row);\n  byProvince[row.province].total += Number(row.count);\n});\n\nconst totalNew = breakdown.reduce((s, r) => s + Number(r.count), 0);\nconst today = new Date().toLocaleDateString('en-ZA', { weekday: 'long', day: 'numeric', month: 'long' });\n\nif (totalNew === 0) {\n  return [{ json: { message: `No new listings added yesterday (${today}).`, total: 0, blocks: '[]' } }];\n}\n\nconst blocks = [\n  {\n    type: 'header',\n    text: { type: 'plain_text', text: `Daily Property Update - ${today}` }\n  },\n  {\n    type: 'section',\n    fields: [\n      { type: 'mrkdwn', text: `*Total New Listings*\\n${totalNew}` },\n      { type: 'mrkdwn', text: `*Provinces Active*\\n${Object.keys(byProvince).length}` }\n    ]\n  },\n  { type: 'divider' }\n];\n\n// Add province sections\nObject.values(byProvince)\n  .sort((a, b) => b.total - a.total)\n  .forEach(prov => {\n    const typesSummary = prov.types\n      .map(t => `${t.property_type}: ${t.count} (avg R${Number(t.avg_price).toLocaleString()})`)\n      .join(' | ');\n    blocks.push({\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `*${prov.province}* - ${prov.total} new listings\\n${typesSummary}`\n      }\n    });\n  });\n\nblocks.push({ type: 'divider' });\nblocks.push({\n  type: 'section',\n  text: { type: 'mrkdwn', text: '*Top 5 New Listings*' }\n});\n\ntopListings.slice(0, 5).forEach(listing => {\n  blocks.push({\n    type: 'section',\n    text: {\n      type: 'mrkdwn',\n      text: `• <${listing.url}|${listing.title}>\\n  R${Number(listing.price).toLocaleString()} | ${listing.bedrooms}bed/${listing.bathrooms}bath | ${listing.city}, ${listing.province}`\n    }\n  });\n});\n\nblocks.push({\n  type: 'actions',\n  elements: [\n    {\n      type: 'button',\n      text: { type: 'plain_text', text: 'View All Listings' },\n      url: 'https://puraestate.co.za/properties',\n      style: 'primary'\n    }\n  ]\n});\n\nreturn [{\n  json: {\n    total_new: totalNew,\n    provinces: Object.keys(byProvince).length,\n    blocks: JSON.stringify(blocks),\n    report_date: today\n  }\n}];"
+      },
+      "id": "code-build-daily",
+      "name": "Build Daily Slack Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 400]
+    },
+    {
+      "parameters": {
+        "channel": "#daily-listings",
+        "blocksUi": "={{ $json.blocks }}",
+        "text": "Daily property update",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "slack-daily-all",
+      "name": "Post to #daily-listings",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [920, 300],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-puraestate",
+          "name": "PuraEstate Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Define province-specific Slack channels\nconst channelMap = {\n  'Western Cape': '#wc-listings',\n  'Gauteng': '#gp-listings',\n  'KwaZulu-Natal': '#kzn-listings',\n  'Eastern Cape': '#ec-listings',\n  'Limpopo': '#lp-listings',\n  'Mpumalanga': '#mp-listings',\n  'North West': '#nw-listings',\n  'Northern Cape': '#nc-listings',\n  'Free State': '#fs-listings'\n};\n\nconst breakdown = $('Get Yesterday\\'s New Listings').all().map(i => i.json);\n\n// Group by province\nconst byProvince = {};\nbreakdown.forEach(row => {\n  const prov = row.province;\n  if (!byProvince[prov]) byProvince[prov] = [];\n  byProvince[prov].push(row);\n});\n\nconst results = [];\n\nObject.entries(byProvince).forEach(([province, rows]) => {\n  const channel = channelMap[province];\n  if (!channel) return;\n  \n  const total = rows.reduce((s, r) => s + Number(r.count), 0);\n  const summary = rows.map(r => `• ${r.property_type}: ${r.count} listings | Avg R${Number(r.avg_price).toLocaleString()}`).join('\\n');\n  \n  results.push({\n    json: {\n      channel,\n      province,\n      total,\n      message: `*${province} Daily Update*\\n${total} new listings added yesterday\\n\\n${summary}\\n\\n<https://puraestate.co.za/properties?province=${encodeURIComponent(province)}|Browse ${province} Properties>`\n    }\n  });\n});\n\nreturn results;"
+      },
+      "id": "code-province-channels",
+      "name": "Split by Province Channel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 500]
+    },
+    {
+      "parameters": {
+        "channel": "={{ $json.channel }}",
+        "text": "={{ $json.message }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "slack-province-channel",
+      "name": "Post to Province Channel",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [1140, 500],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-puraestate",
+          "name": "PuraEstate Slack"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Weekdays 8AM": {
+      "main": [
+        [
+          {
+            "node": "Get Yesterday's New Listings",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Top New Listings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Yesterday's New Listings": {
+      "main": [
+        [
+          {
+            "node": "Build Daily Slack Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Top New Listings": {
+      "main": [
+        [
+          {
+            "node": "Build Daily Slack Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Daily Slack Message": {
+      "main": [
+        [
+          {
+            "node": "Post to #daily-listings",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Split by Province Channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split by Province Channel": {
+      "main": [
+        [
+          {
+            "node": "Post to Province Channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["integrations", "slack", "daily", "provinces", "puraestate"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}

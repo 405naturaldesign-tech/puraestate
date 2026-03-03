@@ -1,0 +1,285 @@
+{
+  "name": "PuraEstate - Database Backup to S3",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-backup",
+      "name": "Daily 2AM Backup",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const now = new Date();\nconst dateStr = now.toISOString().replace(/[:.]/g, '-').split('T')[0];\nconst timeStr = now.toISOString().replace(/[:.]/g, '-').split('T')[1].substring(0, 8);\nconst timestamp = `${dateStr}_${timeStr}`;\n\nreturn [{\n  json: {\n    timestamp,\n    date_str: dateStr,\n    backup_filename: `puraestate_backup_${timestamp}.sql.gz`,\n    backup_path: `/tmp/puraestate_backup_${timestamp}.sql.gz`,\n    s3_key: `backups/postgresql/${dateStr}/puraestate_backup_${timestamp}.sql.gz`,\n    s3_bucket: process.env.AWS_S3_BACKUP_BUCKET || 'puraestate-backups',\n    db_host: process.env.DB_HOST || 'localhost',\n    db_port: process.env.DB_PORT || '5432',\n    db_name: process.env.DB_NAME || 'puraestate',\n    db_user: process.env.DB_USER || 'puraestate_user'\n  }\n}];"
+      },
+      "id": "code-prep-backup",
+      "name": "Prepare Backup Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "command": "=PGPASSWORD=\"$DB_PASSWORD\" pg_dump -h {{ $json.db_host }} -p {{ $json.db_port }} -U {{ $json.db_user }} -d {{ $json.db_name }} --verbose --no-password --format=custom | gzip > {{ $json.backup_path }} && echo \"BACKUP_SIZE=$(du -sh {{ $json.backup_path }} | cut -f1)\" && echo \"BACKUP_SUCCESS=true\"",
+        "options": {
+          "cwd": "/tmp"
+        }
+      },
+      "id": "execute-pg-dump",
+      "name": "Run pg_dump",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "backup-success",
+              "leftValue": "={{ $json.stdout }}",
+              "rightValue": "BACKUP_SUCCESS=true",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-backup-ok",
+      "name": "Backup Created?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "url": "=https://{{ $('Prepare Backup Config').item.json.s3_bucket }}.s3.{{ $env.AWS_REGION }}.amazonaws.com/{{ $('Prepare Backup Config').item.json.s3_key }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-amz-storage-class",
+              "value": "STANDARD_IA"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "file",
+              "value": "={{ $('Prepare Backup Config').item.json.backup_path }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-s3-upload",
+      "name": "Upload to AWS S3",
+      "type": "n8n-nodes-base.awsS3",
+      "typeVersion": 1,
+      "position": [1120, 200],
+      "credentials": {
+        "aws": {
+          "id": "aws-puraestate",
+          "name": "PuraEstate AWS"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "command": "=aws s3 cp {{ $('Prepare Backup Config').item.json.backup_path }} s3://{{ $('Prepare Backup Config').item.json.s3_bucket }}/{{ $('Prepare Backup Config').item.json.s3_key }} --storage-class STANDARD_IA && echo 'S3_UPLOAD_SUCCESS' && aws s3 ls s3://{{ $('Prepare Backup Config').item.json.s3_bucket }}/backups/postgresql/ --recursive --human-readable | tail -20 && rm -f {{ $('Prepare Backup Config').item.json.backup_path }}",
+        "options": {}
+      },
+      "id": "execute-s3-upload",
+      "name": "Upload via AWS CLI",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1120, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const uploadOutput = $input.first().json.stdout || '';\nconst success = uploadOutput.includes('S3_UPLOAD_SUCCESS');\n\n// Parse backup size\nconst sizeMatch = $('Run pg_dump').first().json.stdout?.match(/BACKUP_SIZE=(.+)/);\nconst backupSize = sizeMatch ? sizeMatch[1] : 'Unknown';\n\n// Count existing backups (from ls output)\nconst backupLines = uploadOutput.split('\\n').filter(l => l.includes('.sql.gz'));\nconst backupCount = backupLines.length;\n\n// Calculate oldest backup to potentially clean up\nconst thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);\n\nreturn [{\n  json: {\n    success,\n    backup_filename: $('Prepare Backup Config').first().json.backup_filename,\n    s3_key: $('Prepare Backup Config').first().json.s3_key,\n    s3_bucket: $('Prepare Backup Config').first().json.s3_bucket,\n    backup_size: backupSize,\n    backup_count: backupCount,\n    backup_date: $('Prepare Backup Config').first().json.date_str,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "code-check-upload",
+      "name": "Check Upload Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO backup_log (backup_type, filename, s3_key, s3_bucket, file_size, status, created_at)\nVALUES (\n  'postgresql',\n  '{{ $json.backup_filename }}',\n  '{{ $json.s3_key }}',\n  '{{ $json.s3_bucket }}',\n  '{{ $json.backup_size }}',\n  '{{ $json.success ? \"success\" : \"failed\" }}',\n  NOW()\n);",
+        "options": {}
+      },
+      "id": "postgres-log-backup",
+      "name": "Log Backup Result",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1560, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "#ops-alerts",
+        "text": "=*Database Backup Complete* :floppy_disk:\nDate: {{ $json.backup_date }}\nFile: {{ $json.backup_filename }}\nSize: {{ $json.backup_size }}\nS3: s3://{{ $json.s3_bucket }}/{{ $json.s3_key }}\nTotal Backups Stored: {{ $json.backup_count }}\nStatus: SUCCESS",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "slack-backup-success",
+      "name": "Slack Backup Success",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [1780, 200],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-puraestate",
+          "name": "PuraEstate Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "#alerts",
+        "text": "=*BACKUP FAILED* :rotating_light:\nDate: {{ $('Prepare Backup Config').item.json.date_str }}\nError: pg_dump failed or returned non-zero exit code\nStdErr: {{ $('Run pg_dump').item.json.stderr }}\nAction: Check PostgreSQL connection and disk space immediately!",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "slack-backup-fail",
+      "name": "Slack Backup Failure Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [1120, 500],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-puraestate",
+          "name": "PuraEstate Slack"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily 2AM Backup": {
+      "main": [
+        [
+          {
+            "node": "Prepare Backup Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Backup Config": {
+      "main": [
+        [
+          {
+            "node": "Run pg_dump",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run pg_dump": {
+      "main": [
+        [
+          {
+            "node": "Backup Created?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backup Created?": {
+      "main": [
+        [
+          {
+            "node": "Upload via AWS CLI",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack Backup Failure Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload via AWS CLI": {
+      "main": [
+        [
+          {
+            "node": "Check Upload Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Upload Status": {
+      "main": [
+        [
+          {
+            "node": "Log Backup Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Backup Result": {
+      "main": [
+        [
+          {
+            "node": "Slack Backup Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["admin", "backup", "postgresql", "s3", "puraestate"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}

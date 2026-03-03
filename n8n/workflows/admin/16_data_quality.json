@@ -1,0 +1,271 @@
+{
+  "name": "PuraEstate - Data Quality & Deduplication",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 3 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-dq",
+      "name": "Daily 3AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Step 1: Find exact duplicates by URL\nSELECT \n  MIN(id) AS keep_id,\n  MAX(id) AS remove_id,\n  url,\n  COUNT(*) AS duplicate_count\nFROM properties\nWHERE url IS NOT NULL AND url != ''\nGROUP BY url\nHAVING COUNT(*) > 1\nLIMIT 100;",
+        "options": {}
+      },
+      "id": "postgres-find-url-dupes",
+      "name": "Find URL Duplicates",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Step 2: Find near-duplicate properties (same location, price, bedrooms)\nSELECT \n  p1.id AS id1,\n  p2.id AS id2,\n  p1.title AS title1,\n  p2.title AS title2,\n  p1.price,\n  p1.bedrooms,\n  p1.city,\n  p1.province,\n  p1.source AS source1,\n  p2.source AS source2\nFROM properties p1\nJOIN properties p2 ON \n  p1.id < p2.id\n  AND p1.price = p2.price\n  AND p1.bedrooms = p2.bedrooms\n  AND LOWER(p1.city) = LOWER(p2.city)\n  AND p1.province = p2.province\n  AND p1.status = 'active'\n  AND p2.status = 'active'\n  AND ABS(EXTRACT(EPOCH FROM (p1.created_at - p2.created_at))) < 86400\nLIMIT 50;",
+        "options": {}
+      },
+      "id": "postgres-find-near-dupes",
+      "name": "Find Near-Duplicate Properties",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 380],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Step 3: Find data quality issues\nSELECT \n  'missing_price' AS issue_type,\n  COUNT(*) AS count\nFROM properties WHERE price = 0 OR price IS NULL AND status = 'active'\nUNION ALL\nSELECT \n  'missing_location' AS issue_type,\n  COUNT(*) AS count\nFROM properties WHERE (city IS NULL OR city = '') AND status = 'active'\nUNION ALL\nSELECT \n  'unrealistic_price_high' AS issue_type,\n  COUNT(*) AS count\nFROM properties WHERE price > 100000000 AND status = 'active'\nUNION ALL\nSELECT \n  'unrealistic_price_low' AS issue_type,\n  COUNT(*) AS count\nFROM properties WHERE price < 50000 AND price > 0 AND status = 'active'\nUNION ALL\nSELECT \n  'missing_property_type' AS issue_type,\n  COUNT(*) AS count\nFROM properties WHERE (property_type IS NULL OR property_type = 'unknown') AND status = 'active'\nUNION ALL\nSELECT \n  'stale_listings' AS issue_type,\n  COUNT(*) AS count\nFROM properties WHERE scraped_at < NOW() - INTERVAL '30 days' AND status = 'active';",
+        "options": {}
+      },
+      "id": "postgres-quality-issues",
+      "name": "Find Data Quality Issues",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 560],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Remove exact URL duplicates (keep the oldest record)\nUPDATE properties\nSET status = 'duplicate'\nWHERE id IN (\n  SELECT MAX(id)\n  FROM properties\n  WHERE url IS NOT NULL AND url != ''\n  GROUP BY url\n  HAVING COUNT(*) > 1\n)\nRETURNING id, listing_id, title;",
+        "options": {}
+      },
+      "id": "postgres-remove-dupes",
+      "name": "Mark Duplicates as Removed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [680, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Flag stale listings as inactive\nUPDATE properties\nSET status = 'stale'\nWHERE scraped_at < NOW() - INTERVAL '30 days'\nAND status = 'active'\nRETURNING id, listing_id, title, scraped_at;",
+        "options": {}
+      },
+      "id": "postgres-flag-stale",
+      "name": "Flag Stale Listings",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [680, 380],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Normalize province names to standard South African province names\nUPDATE properties SET province = 'Western Cape' WHERE province ILIKE '%western cap%' AND province != 'Western Cape';\nUPDATE properties SET province = 'Gauteng' WHERE province ILIKE '%gauteng%' AND province != 'Gauteng';\nUPDATE properties SET province = 'KwaZulu-Natal' WHERE (province ILIKE '%kwazulu%' OR province ILIKE '%kzn%') AND province != 'KwaZulu-Natal';\nUPDATE properties SET province = 'Eastern Cape' WHERE province ILIKE '%eastern cap%' AND province != 'Eastern Cape';\nUPDATE properties SET province = 'Limpopo' WHERE province ILIKE '%limpopo%' AND province != 'Limpopo';\nUPDATE properties SET province = 'Mpumalanga' WHERE province ILIKE '%mpumalanga%' AND province != 'Mpumalanga';\nUPDATE properties SET province = 'North West' WHERE province ILIKE '%north west%' AND province != 'North West';\nUPDATE properties SET province = 'Northern Cape' WHERE province ILIKE '%northern cap%' AND province != 'Northern Cape';\nUPDATE properties SET province = 'Free State' WHERE province ILIKE '%free state%' AND province != 'Free State';\nSELECT 'Normalization complete' AS result;",
+        "options": {}
+      },
+      "id": "postgres-normalize",
+      "name": "Normalize Province Names",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [680, 560],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const urlDupes = $('Find URL Duplicates').all().length;\nconst nearDupes = $('Find Near-Duplicate Properties').all().length;\nconst qualityIssues = $('Find Data Quality Issues').all().map(i => i.json);\nconst removedDupes = $('Mark Duplicates as Removed').all().length;\nconst staledListings = $('Flag Stale Listings').all().length;\n\nconst issuesSummary = qualityIssues.map(i => `• ${i.issue_type}: ${i.count}`).join('\\n');\n\nconst totalIssues = qualityIssues.reduce((s, i) => s + Number(i.count), 0);\n\nreturn [{\n  json: {\n    report_date: new Date().toLocaleDateString('en-ZA'),\n    url_duplicates_found: urlDupes,\n    near_duplicates_found: nearDupes,\n    duplicates_removed: removedDupes,\n    stale_listings_flagged: staledListings,\n    quality_issues: qualityIssues,\n    total_quality_issues: totalIssues,\n    issues_summary: issuesSummary\n  }\n}];"
+      },
+      "id": "code-build-dq-report",
+      "name": "Build DQ Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "channel": "#data-quality",
+        "text": "=*Daily Data Quality Report* :mag:\nDate: {{ $json.report_date }}\n\n*Deduplication:*\n• URL Duplicates Found: {{ $json.url_duplicates_found }}\n• Near-Duplicates Found: {{ $json.near_duplicates_found }}\n• Duplicates Removed: {{ $json.duplicates_removed }}\n• Stale Listings Flagged: {{ $json.stale_listings_flagged }}\n\n*Quality Issues:*\n{{ $json.issues_summary }}\n\nTotal Issues: {{ $json.total_quality_issues }}\n{{ $json.total_quality_issues > 100 ? ':warning: High number of quality issues - review needed' : ':white_check_mark: Data quality within acceptable range' }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "slack-dq-report",
+      "name": "Post DQ Report to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [1120, 400],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-puraestate",
+          "name": "PuraEstate Slack"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily 3AM": {
+      "main": [
+        [
+          {
+            "node": "Find URL Duplicates",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Find Near-Duplicate Properties",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Find Data Quality Issues",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find URL Duplicates": {
+      "main": [
+        [
+          {
+            "node": "Mark Duplicates as Removed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Near-Duplicate Properties": {
+      "main": [
+        [
+          {
+            "node": "Flag Stale Listings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Data Quality Issues": {
+      "main": [
+        [
+          {
+            "node": "Normalize Province Names",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Duplicates as Removed": {
+      "main": [
+        [
+          {
+            "node": "Build DQ Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flag Stale Listings": {
+      "main": [
+        [
+          {
+            "node": "Build DQ Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Province Names": {
+      "main": [
+        [
+          {
+            "node": "Build DQ Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build DQ Report": {
+      "main": [
+        [
+          {
+            "node": "Post DQ Report to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["admin", "data-quality", "deduplication", "puraestate"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}

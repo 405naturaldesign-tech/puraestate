@@ -1,0 +1,44 @@
+{
+  "projectId": "puraestate-backend",
+  "databaseURL": "https://puraestate-backend.firebaseio.com",
+  "storageBucket": "puraestate-backend.appspot.com",
+  "messagingSenderId": "123456789012",
+  "appId": "1:123456789012:web:abcdef1234567890abcdef",
+  "apiKey": "AIzaSyDemoKeyForPuraEstateProject",
+  "authDomain": "puraestate-backend.firebaseapp.com",
+  "region": "us-central1",
+  "functions": {
+    "runtime": "nodejs18",
+    "memory": 512,
+    "timeoutSeconds": 540
+  },
+  "firestore": {
+    "region": "us-central1",
+    "multiregionWrite": false
+  },
+  "storage": {
+    "bucketName": "puraestate-backend.appspot.com"
+  },
+  "realtimeDatabase": {
+    "url": "https://puraestate-backend.firebaseio.com"
+  },
+  "authentication": {
+    "providers": [
+      "email",
+      "google",
+      "facebook",
+      "apple",
+      "phone"
+    ]
+  },
+  "backups": {
+    "enabled": true,
+    "frequency": "daily",
+    "retention": 30
+  },
+  "monitoring": {
+    "logging": "enabled",
+    "tracing": "enabled",
+    "errorReporting": "enabled"
+  }
+}

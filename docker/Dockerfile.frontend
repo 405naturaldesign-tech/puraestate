@@ -1,0 +1,111 @@
+# =============================================================================
+# PuraEstate – Next.js Frontend Dockerfile (Production Multi-Stage)
+# =============================================================================
+# Stage 1: deps      – install ALL node_modules (including devDeps)
+# Stage 2: builder   – run `next build` with full deps available
+# Stage 3: runner    – production image using Next.js standalone output
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Stage 1: Dependency installer
+# ---------------------------------------------------------------------------
+FROM node:20-alpine AS deps
+
+# Check https://github.com/nodejs/docker-node/tree/b4117f9333da4138b03a546ec926ef50a31506c3#nodealpine
+# to understand why libc6-compat may be needed.
+RUN apk add --no-cache libc6-compat
+
+WORKDIR /app
+
+# Copy package manifests only (for layer caching)
+COPY package.json package-lock.json* ./
+
+# Install ALL dependencies (including dev so build works)
+RUN npm ci --legacy-peer-deps
+
+# ---------------------------------------------------------------------------
+# Stage 2: Builder
+# ---------------------------------------------------------------------------
+FROM node:20-alpine AS builder
+
+RUN apk add --no-cache libc6-compat
+
+WORKDIR /app
+
+# Copy installed node_modules from deps stage
+COPY --from=deps /app/node_modules ./node_modules
+
+# Copy all source files
+COPY . .
+
+# Build-time environment variables
+# These are baked in at build time – pass actual values via --build-arg
+ARG NEXT_PUBLIC_API_URL=https://puraestate.com
+ARG NEXT_PUBLIC_WS_URL=wss://puraestate.com
+ARG NEXT_PUBLIC_SITE_URL=https://puraestate.com
+ARG NEXT_PUBLIC_MAPBOX_TOKEN=
+ARG NEXT_PUBLIC_GOOGLE_MAPS_KEY=
+
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+ENV NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL}
+ENV NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL}
+ENV NEXT_PUBLIC_MAPBOX_TOKEN=${NEXT_PUBLIC_MAPBOX_TOKEN}
+ENV NEXT_PUBLIC_GOOGLE_MAPS_KEY=${NEXT_PUBLIC_GOOGLE_MAPS_KEY}
+
+# Next.js telemetry is disabled in production builds
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production
+
+# Enable Next.js standalone output (copies only required files)
+# This requires `output: 'standalone'` in next.config.js
+# The standalone output self-contains a minimal node_modules subset.
+
+RUN npm run build
+
+# ---------------------------------------------------------------------------
+# Stage 3: Production runner
+# ---------------------------------------------------------------------------
+FROM node:20-alpine AS runner
+
+LABEL maintainer="PuraEstate <devops@puraestate.com>"
+LABEL org.opencontainers.image.title="PuraEstate Next.js Frontend"
+LABEL org.opencontainers.image.description="Production Next.js frontend for PuraEstate SaaS"
+LABEL org.opencontainers.image.version="1.0.0"
+
+RUN apk add --no-cache \
+        curl \
+        tini
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+
+# Create a non-root user
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser  --system --uid 1001 nextjs
+
+# Copy built artifacts from builder
+# If standalone mode is enabled in next.config.js:
+#   COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+#   COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+#   COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+# Otherwise copy everything needed to run `next start`:
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
+COPY --from=builder --chown=nextjs:nodejs /app/next.config.js ./next.config.js
+
+USER nextjs
+
+EXPOSE 3000
+
+# Health check – Next.js serves the root path when healthy
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/ || exit 1
+
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node_modules/.bin/next", "start", "--port", "3000", "--hostname", "0.0.0.0"]

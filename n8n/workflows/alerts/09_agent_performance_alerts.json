@@ -1,0 +1,163 @@
+{
+  "name": "PuraEstate - Agent Performance Alerts",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 5"
+            }
+          ]
+        }
+      },
+      "id": "cron-agent-perf",
+      "name": "Friday 8AM Weekly Review",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  a.id AS agent_id,\n  a.name AS agent_name,\n  a.email AS agent_email,\n  a.phone AS agent_phone,\n  a.target_conversions_monthly,\n  COUNT(DISTINCT l.id) AS total_leads,\n  COUNT(DISTINCT CASE WHEN l.status = 'converted' THEN l.id END) AS converted_leads,\n  COUNT(DISTINCT CASE WHEN l.status = 'qualified' THEN l.id END) AS qualified_leads,\n  COUNT(DISTINCT CASE WHEN l.status = 'lost' THEN l.id END) AS lost_leads,\n  COUNT(DISTINCT CASE WHEN l.created_at >= CURRENT_DATE - INTERVAL '7 days' THEN l.id END) AS new_leads_this_week,\n  COUNT(DISTINCT CASE WHEN l.last_contact_at < CURRENT_DATE - INTERVAL '3 days' \n    AND l.status NOT IN ('converted', 'lost') THEN l.id END) AS overdue_followups,\n  ROUND(\n    CASE WHEN COUNT(DISTINCT l.id) > 0 \n    THEN COUNT(DISTINCT CASE WHEN l.status = 'converted' THEN l.id END)::numeric / COUNT(DISTINCT l.id) * 100 \n    ELSE 0 END, 1\n  ) AS conversion_rate_pct,\n  AVG(CASE WHEN l.status = 'converted' THEN \n    EXTRACT(EPOCH FROM (l.converted_at - l.created_at)) / 86400 END\n  ) AS avg_days_to_convert\nFROM agents a\nLEFT JOIN leads l ON l.agent_id = a.id AND l.created_at >= CURRENT_DATE - INTERVAL '30 days'\nWHERE a.active = true\nGROUP BY a.id, a.name, a.email, a.phone, a.target_conversions_monthly\nORDER BY conversion_rate_pct DESC;",
+        "options": {}
+      },
+      "id": "postgres-agent-stats",
+      "name": "Get Agent Performance Data",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const agents = $input.all().map(i => i.json);\n\nconst ALERT_THRESHOLDS = {\n  min_conversion_rate: 10,        // below 10% is concerning\n  max_overdue_followups: 5,       // more than 5 overdue is bad\n  min_weekly_new_leads: 3,        // fewer than 3 new leads/week is low\n  performance_colors: {\n    excellent: { min: 20, color: '#27ae60', emoji: 'star' },\n    good:      { min: 15, color: '#2ecc71', emoji: 'thumbsup' },\n    average:   { min: 10, color: '#f39c12', emoji: 'neutral_face' },\n    poor:      { min: 0,  color: '#e74c3c', emoji: 'warning' }\n  }\n};\n\nconst getPerformanceTier = (rate) => {\n  if (rate >= 20) return 'excellent';\n  if (rate >= 15) return 'good';\n  if (rate >= 10) return 'average';\n  return 'poor';\n};\n\nconst agentsNeedingAttention = agents.filter(a => \n  a.conversion_rate_pct < ALERT_THRESHOLDS.min_conversion_rate ||\n  a.overdue_followups > ALERT_THRESHOLDS.max_overdue_followups\n);\n\n// Sort agents for leaderboard\nconst sortedAgents = [...agents].sort((a, b) => b.conversion_rate_pct - a.conversion_rate_pct);\n\nconst slackBlocks = [\n  {\n    type: 'header',\n    text: { type: 'plain_text', text: 'Agent Performance Report - Week Ending ' + new Date().toLocaleDateString('en-ZA') }\n  },\n  {\n    type: 'section',\n    text: { type: 'mrkdwn', text: `*Team Overview:* ${agents.length} active agents | ${agents.reduce((s,a) => s + Number(a.total_leads), 0)} total leads | ${agents.reduce((s,a) => s + Number(a.converted_leads), 0)} conversions` }\n  },\n  { type: 'divider' },\n  {\n    type: 'section',\n    text: { type: 'mrkdwn', text: '*Leaderboard*' }\n  },\n  ...sortedAgents.slice(0, 5).map((agent, idx) => {\n    const tier = getPerformanceTier(agent.conversion_rate_pct);\n    const medal = idx === 0 ? ':first_place_medal:' : idx === 1 ? ':second_place_medal:' : idx === 2 ? ':third_place_medal:' : `${idx + 1}.`;\n    return {\n      type: 'section',\n      text: {\n        type: 'mrkdwn',\n        text: `${medal} *${agent.agent_name}*\\n` +\n              `Conversion: ${agent.conversion_rate_pct}% | Leads: ${agent.total_leads} | Converted: ${agent.converted_leads}\\n` +\n              `New This Week: ${agent.new_leads_this_week} | Overdue: ${agent.overdue_followups}`\n      }\n    };\n  })\n];\n\nif (agentsNeedingAttention.length > 0) {\n  slackBlocks.push({ type: 'divider' });\n  slackBlocks.push({\n    type: 'section',\n    text: { type: 'mrkdwn', text: ':warning: *Agents Needing Attention*' }\n  });\n  agentsNeedingAttention.forEach(agent => {\n    const issues = [];\n    if (agent.conversion_rate_pct < ALERT_THRESHOLDS.min_conversion_rate) {\n      issues.push(`Low conversion rate (${agent.conversion_rate_pct}%)`);\n    }\n    if (agent.overdue_followups > ALERT_THRESHOLDS.max_overdue_followups) {\n      issues.push(`${agent.overdue_followups} overdue follow-ups`);\n    }\n    slackBlocks.push({\n      type: 'section',\n      text: { type: 'mrkdwn', text: `*${agent.agent_name}*: ${issues.join(', ')}` }\n    });\n  });\n}\n\nreturn [{\n  json: {\n    agents,\n    sorted_agents: sortedAgents,\n    agents_needing_attention: agentsNeedingAttention,\n    slack_blocks: JSON.stringify(slackBlocks),\n    report_date: new Date().toLocaleDateString('en-ZA'),\n    total_leads: agents.reduce((s,a) => s + Number(a.total_leads), 0),\n    total_conversions: agents.reduce((s,a) => s + Number(a.converted_leads), 0),\n    team_conversion_rate: agents.length > 0 ?\n      (agents.reduce((s,a) => s + Number(a.converted_leads), 0) / \n       agents.reduce((s,a) => s + Number(a.total_leads), 1) * 100).toFixed(1) : 0\n  }\n}];"
+      },
+      "id": "code-analyze-perf",
+      "name": "Analyze Performance",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "channel": "#agent-performance",
+        "blocksUi": "={{ $json.slack_blocks }}",
+        "text": "Agent Performance Report",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "slack-perf-report",
+      "name": "Post Performance to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [900, 200],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-puraestate",
+          "name": "PuraEstate Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Analyze Performance').first().json;\nconst agentsToAlert = data.agents_needing_attention;\n\nif (agentsToAlert.length === 0) return [];\n\n// Return one item per agent needing attention\nreturn agentsToAlert.map(agent => ({\n  json: {\n    ...agent,\n    manager_email: process.env.MANAGER_EMAIL || 'manager@puraestate.co.za'\n  }\n}));"
+      },
+      "id": "code-filter-alerts",
+      "name": "Filter Agents for Alerts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.manager_email }}",
+        "subject": "Action Required: Agent {{ $json.agent_name }} needs attention",
+        "emailFormat": "html",
+        "message": "=<h2>Agent Performance Alert</h2><p>The following agent requires management attention:</p><table border='1' cellpadding='8' style='border-collapse:collapse;'><tr><td><strong>Agent</strong></td><td>{{ $json.agent_name }}</td></tr><tr><td><strong>Email</strong></td><td>{{ $json.agent_email }}</td></tr><tr><td><strong>Conversion Rate</strong></td><td>{{ $json.conversion_rate_pct }}%</td></tr><tr><td><strong>Total Leads</strong></td><td>{{ $json.total_leads }}</td></tr><tr><td><strong>Converted</strong></td><td>{{ $json.converted_leads }}</td></tr><tr><td><strong>Overdue Follow-ups</strong></td><td>{{ $json.overdue_followups }}</td></tr><tr><td><strong>New Leads This Week</strong></td><td>{{ $json.new_leads_this_week }}</td></tr></table><p>Please schedule a check-in with this agent to discuss their pipeline.</p>",
+        "options": {}
+      },
+      "id": "email-manager-alert",
+      "name": "Alert Manager via Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1120, 400],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-puraestate",
+          "name": "PuraEstate SMTP"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Friday 8AM Weekly Review": {
+      "main": [
+        [
+          {
+            "node": "Get Agent Performance Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Agent Performance Data": {
+      "main": [
+        [
+          {
+            "node": "Analyze Performance",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Performance": {
+      "main": [
+        [
+          {
+            "node": "Post Performance to Slack",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Filter Agents for Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Agents for Alerts": {
+      "main": [
+        [
+          {
+            "node": "Alert Manager via Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["alerts", "agents", "performance", "puraestate"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}

@@ -1,0 +1,303 @@
+{
+  "name": "PuraEstate - Inquiry Form Processing",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "puraestate/inquiry",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "https://puraestate.co.za,https://www.puraestate.co.za"
+        }
+      },
+      "id": "webhook-inquiry",
+      "name": "Inquiry Form Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "webhookId": "puraestate-inquiry-001"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\n\n// Validate required fields\nif (!body.email || !body.first_name) {\n  return [{ json: { valid: false, error: 'Email and first name are required' } }];\n}\n\n// Validate email format\nconst emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\nif (!emailRegex.test(body.email)) {\n  return [{ json: { valid: false, error: 'Invalid email format' } }];\n}\n\n// Validate phone (South African numbers)\nconst phoneRaw = (body.phone || '').replace(/\\s+/g, '');\nconst saPhoneRegex = /^(\\+27|0)[6-8][0-9]{8}$/;\nconst phoneValid = !phoneRaw || saPhoneRegex.test(phoneRaw);\n\n// Build lead score based on completeness and intent signals\nlet leadScore = 0;\nif (body.budget && body.budget > 0) leadScore += 20;\nif (body.bedrooms) leadScore += 10;\nif (body.province) leadScore += 10;\nif (body.timeline && body.timeline !== 'just_browsing') leadScore += 15;\nif (body.financing_type === 'cash') leadScore += 25;\nif (body.financing_type === 'bond_approved') leadScore += 20;\nif (phoneRaw && phoneValid) leadScore += 10;\nif (body.viewing_requested) leadScore += 15;\nif (body.property_id) leadScore += 20;\n\nconst lead = {\n  valid: true,\n  first_name: String(body.first_name || '').substring(0, 50).trim(),\n  last_name: String(body.last_name || '').substring(0, 50).trim(),\n  email: body.email.toLowerCase().trim(),\n  phone: phoneValid ? phoneRaw : '',\n  message: String(body.message || '').substring(0, 2000).trim(),\n  property_id: body.property_id || null,\n  property_url: body.property_url || '',\n  property_title: body.property_title || '',\n  budget: parseFloat(body.budget) || 0,\n  bedrooms: parseInt(body.bedrooms) || 0,\n  province: body.province || '',\n  city: body.city || '',\n  property_type: body.property_type || '',\n  timeline: body.timeline || 'unknown',\n  financing_type: body.financing_type || 'unknown',\n  viewing_requested: body.viewing_requested || false,\n  lead_score: Math.min(leadScore, 100),\n  source: body.source || body.utm_source || 'website',\n  utm_medium: body.utm_medium || '',\n  utm_campaign: body.utm_campaign || '',\n  ip_address: $input.first().json.headers?.['x-forwarded-for'] || '',\n  user_agent: $input.first().json.headers?.['user-agent'] || '',\n  submitted_at: new Date().toISOString(),\n  status: 'new'\n};\n\nreturn [{ json: lead }];"
+      },
+      "id": "code-validate-inquiry",
+      "name": "Validate & Score Inquiry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-valid",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-valid-inquiry",
+      "name": "Valid Inquiry?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO leads (\n  first_name, last_name, email, phone, message,\n  property_id, property_url, property_title,\n  budget, bedrooms, province, city, property_type,\n  timeline, financing_type, viewing_requested,\n  lead_score, source, utm_medium, utm_campaign,\n  ip_address, status, submitted_at\n)\nVALUES (\n  '{{ $json.first_name }}', '{{ $json.last_name }}', '{{ $json.email }}',\n  '{{ $json.phone }}', '{{ $json.message.replace(/'/g, \"''\") }}',\n  {{ $json.property_id ? `'${$json.property_id}'` : 'NULL' }},\n  '{{ $json.property_url }}', '{{ $json.property_title.replace(/'/g, \"''\") }}',\n  {{ $json.budget }}, {{ $json.bedrooms }}, '{{ $json.province }}',\n  '{{ $json.city }}', '{{ $json.property_type }}',\n  '{{ $json.timeline }}', '{{ $json.financing_type }}',\n  {{ $json.viewing_requested }}, {{ $json.lead_score }},\n  '{{ $json.source }}', '{{ $json.utm_medium }}', '{{ $json.utm_campaign }}',\n  '{{ $json.ip_address }}', '{{ $json.status }}', '{{ $json.submitted_at }}'\n)\nON CONFLICT (email, submitted_at) DO NOTHING\nRETURNING id, email, first_name, lead_score;",
+        "options": {}
+      },
+      "id": "postgres-create-lead",
+      "name": "Create Lead in Database",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [900, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"success\": true, \"message\": \"Thank you for your inquiry! We'll be in touch within 24 hours.\", \"reference\": \"{{ $json.id }}\" }",
+        "options": {
+          "responseCode": 201
+        }
+      },
+      "id": "respond-success",
+      "name": "Respond to Form",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1120, 200]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Validate & Score Inquiry').item.json.email }}",
+        "subject": "We received your property inquiry - PuraEstate",
+        "emailFormat": "html",
+        "message": "=<!DOCTYPE html><html><head><style>body{font-family:Arial,sans-serif;color:#333;}div.container{max-width:600px;margin:0 auto;}.header{background:#1a472a;color:white;padding:25px;text-align:center;}.content{padding:25px;}.cta{background:#1a472a;color:white;padding:12px 25px;text-decoration:none;border-radius:5px;display:inline-block;margin:15px 0;}</style></head><body><div class=\"container\"><div class=\"header\"><h1>Inquiry Received</h1></div><div class=\"content\"><p>Hi {{ $('Validate & Score Inquiry').item.json.first_name }},</p><p>Thank you for contacting PuraEstate! We've received your inquiry and one of our agents will be in touch with you within 24 hours.</p>{{ $('Validate & Score Inquiry').item.json.property_title ? '<p><strong>Property you enquired about:</strong> ' + $('Validate & Score Inquiry').item.json.property_title + '</p>' : '' }}<p><strong>Your inquiry:</strong><br>{{ $('Validate & Score Inquiry').item.json.message }}</p><p>In the meantime, feel free to browse more properties:</p><a href=\"https://puraestate.co.za/properties\" class=\"cta\">Browse Properties</a><p>Reference Number: #{{ $('Create Lead in Database').item.json.id }}</p></div><div style=\"background:#f5f5f5;padding:15px;text-align:center;font-size:12px;\">PuraEstate | South African Property Intelligence</div></div></body></html>",
+        "options": {}
+      },
+      "id": "email-confirmation",
+      "name": "Send Confirmation to Inquirer",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1120, 380],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-puraestate",
+          "name": "PuraEstate SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  a.id AS agent_id,\n  a.name AS agent_name,\n  a.email AS agent_email,\n  a.phone AS agent_phone\nFROM agents a\nWHERE a.active = true\nAND (a.province_focus = '{{ $('Validate & Score Inquiry').item.json.province }}' OR a.province_focus IS NULL)\nORDER BY (\n  SELECT COUNT(*) FROM leads l \n  WHERE l.agent_id = a.id \n  AND l.status = 'assigned'\n  AND l.created_at >= NOW() - INTERVAL '7 days'\n) ASC\nLIMIT 1;",
+        "options": {}
+      },
+      "id": "postgres-assign-agent",
+      "name": "Assign to Available Agent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1340, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE leads \nSET agent_id = {{ $json.agent_id }}, status = 'assigned', assigned_at = NOW()\nWHERE id = {{ $('Create Lead in Database').item.json.id }};",
+        "options": {}
+      },
+      "id": "postgres-update-lead",
+      "name": "Update Lead with Agent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1560, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Assign to Available Agent').item.json.agent_email }}",
+        "subject": "New Lead Assigned: {{ $('Validate & Score Inquiry').item.json.first_name }} {{ $('Validate & Score Inquiry').item.json.last_name }}",
+        "emailFormat": "html",
+        "message": "=<h2>New Lead Assigned</h2><p><strong>Client:</strong> {{ $('Validate & Score Inquiry').item.json.first_name }} {{ $('Validate & Score Inquiry').item.json.last_name }}</p><p><strong>Email:</strong> {{ $('Validate & Score Inquiry').item.json.email }}</p><p><strong>Phone:</strong> {{ $('Validate & Score Inquiry').item.json.phone || 'Not provided' }}</p><p><strong>Lead Score:</strong> {{ $('Validate & Score Inquiry').item.json.lead_score }}/100</p><p><strong>Budget:</strong> {{ $('Validate & Score Inquiry').item.json.budget > 0 ? 'R' + Number($('Validate & Score Inquiry').item.json.budget).toLocaleString() : 'Not specified' }}</p><p><strong>Province:</strong> {{ $('Validate & Score Inquiry').item.json.province }}</p><p><strong>Timeline:</strong> {{ $('Validate & Score Inquiry').item.json.timeline }}</p><p><strong>Financing:</strong> {{ $('Validate & Score Inquiry').item.json.financing_type }}</p><p><strong>Message:</strong><br>{{ $('Validate & Score Inquiry').item.json.message }}</p>{{ $('Validate & Score Inquiry').item.json.property_url ? '<p><strong>Property:</strong> <a href=\"' + $('Validate & Score Inquiry').item.json.property_url + '\">' + $('Validate & Score Inquiry').item.json.property_title + '</a></p>' : '' }}<hr><p><a href=\"https://puraestate.co.za/admin/leads/{{ $('Create Lead in Database').item.json.id }}\">View in CRM</a></p>",
+        "options": {}
+      },
+      "id": "email-agent-notify",
+      "name": "Notify Agent of New Lead",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1780, 200],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-puraestate",
+          "name": "PuraEstate SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "#new-leads",
+        "text": "=*New Lead* :raising_hand:\n*{{ $('Validate & Score Inquiry').item.json.first_name }} {{ $('Validate & Score Inquiry').item.json.last_name }}*\nScore: {{ $('Validate & Score Inquiry').item.json.lead_score }}/100{{ $('Validate & Score Inquiry').item.json.lead_score >= 70 ? ' :fire: HOT LEAD' : $('Validate & Score Inquiry').item.json.lead_score >= 40 ? ' :orange_circle:' : '' }}\nBudget: {{ $('Validate & Score Inquiry').item.json.budget > 0 ? 'R' + Number($('Validate & Score Inquiry').item.json.budget).toLocaleString() : 'Not specified' }}\nLocation: {{ $('Validate & Score Inquiry').item.json.province }}\nTimeline: {{ $('Validate & Score Inquiry').item.json.timeline }}\nAssigned to: {{ $('Assign to Available Agent').item.json.agent_name }}\n<https://puraestate.co.za/admin/leads/{{ $('Create Lead in Database').item.json.id }}|View Lead>",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "slack-new-lead",
+      "name": "Post New Lead to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [1780, 400],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-puraestate",
+          "name": "PuraEstate Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"success\": false, \"error\": \"{{ $json.error }}\", \"code\": 400 }",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "respond-error",
+      "name": "Respond with Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [900, 440]
+    }
+  ],
+  "connections": {
+    "Inquiry Form Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate & Score Inquiry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Score Inquiry": {
+      "main": [
+        [
+          {
+            "node": "Valid Inquiry?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid Inquiry?": {
+      "main": [
+        [
+          {
+            "node": "Create Lead in Database",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Lead in Database": {
+      "main": [
+        [
+          {
+            "node": "Respond to Form",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Confirmation to Inquirer",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Assign to Available Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assign to Available Agent": {
+      "main": [
+        [
+          {
+            "node": "Update Lead with Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Lead with Agent": {
+      "main": [
+        [
+          {
+            "node": "Notify Agent of New Lead",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Post New Lead to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["lead-management", "inquiry", "crm", "puraestate"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}

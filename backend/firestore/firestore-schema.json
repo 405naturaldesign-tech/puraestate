@@ -1,0 +1,356 @@
+{
+  "collections": {
+    "users": {
+      "description": "Investor and agent profiles",
+      "document_structure": {
+        "uid": "string (document ID from Firebase Auth)",
+        "email": "string (unique)",
+        "firstName": "string",
+        "lastName": "string",
+        "phoneNumber": "string",
+        "profileImage": "string (Storage URL)",
+        "userType": "string (enum: investor, agent, admin)",
+        "location": "object { country, state, city, coordinates }",
+        "bio": "string",
+        "verificationStatus": "string (enum: unverified, pending, verified, rejected)",
+        "kycDocuments": "array of { type, url, uploadedAt, expiresAt }",
+        "socialLinks": "object { linkedin, twitter, instagram }",
+        "investmentPreferences": "object { minBudget, maxBudget, propertyTypes[], locations[], riskTolerance }",
+        "preferences": "object { notifications, language, currency, timezone }",
+        "createdAt": "timestamp",
+        "updatedAt": "timestamp",
+        "lastLoginAt": "timestamp",
+        "isActive": "boolean",
+        "metadata": "object { source, referralCode, tags[] }"
+      }
+    },
+    "properties": {
+      "description": "Real estate listings",
+      "document_structure": {
+        "propertyId": "string (document ID)",
+        "agentId": "string (reference to users)",
+        "title": "string",
+        "description": "string",
+        "address": "object { street, city, state, zipCode, country, coordinates }",
+        "propertyType": "string (enum: residential, commercial, mixed, land)",
+        "subType": "string (enum: apartment, house, villa, office, retail, etc)",
+        "bedrooms": "number",
+        "bathrooms": "number",
+        "squareFeet": "number",
+        "yearBuilt": "number",
+        "price": "object { amount, currency, pricePerSqFt, appreciationRate }",
+        "amenities": "array of strings",
+        "features": "object { hasParking, hasPool, hasGym, hasGarden, etc }",
+        "availabilityDate": "timestamp",
+        "listingStatus": "string (enum: active, sold, pending, withdrawn)",
+        "investmentReturns": "object { expectedROI, rentIncome, capitalAppreciation, period }",
+        "marketData": "object { priceHistory[], demandScore, marketTrends }",
+        "riskAssessment": "object { riskLevel, factors[], score }",
+        "documentationUrl": "string (folder path in Storage)",
+        "virtualTourUrl": "string",
+        "createdAt": "timestamp",
+        "updatedAt": "timestamp",
+        "viewCount": "number",
+        "favoriteCount": "number"
+      }
+    },
+    "property_images": {
+      "description": "Property images and media",
+      "document_structure": {
+        "imageId": "string (document ID)",
+        "propertyId": "string (reference to properties)",
+        "url": "string (Storage URL)",
+        "thumbnailUrl": "string",
+        "imageType": "string (enum: exterior, interior, bedroom, bathroom, common, amenities)",
+        "displayOrder": "number",
+        "caption": "string",
+        "metadata": "object { width, height, size, format, uploadedAt, optimized }",
+        "createdAt": "timestamp"
+      }
+    },
+    "favorites": {
+      "description": "User saved/favorited properties",
+      "document_structure": {
+        "favoriteId": "string (document ID)",
+        "userId": "string (reference to users)",
+        "propertyId": "string (reference to properties)",
+        "savedAt": "timestamp",
+        "notes": "string",
+        "priority": "number (1-5)",
+        "tags": "array of strings",
+        "reminderSet": "boolean",
+        "reminderDate": "timestamp"
+      }
+    },
+    "bookings": {
+      "description": "Property viewing and booking requests",
+      "document_structure": {
+        "bookingId": "string (document ID)",
+        "userId": "string (reference to users)",
+        "propertyId": "string (reference to properties)",
+        "agentId": "string (reference to users/agents)",
+        "bookingType": "string (enum: viewing, investment_consultation, offer)",
+        "scheduledDate": "timestamp",
+        "duration": "number (minutes)",
+        "status": "string (enum: pending, confirmed, completed, cancelled, no_show)",
+        "notes": "string",
+        "meetingType": "string (enum: in-person, virtual, phone)",
+        "meetingLink": "string (for virtual meetings)",
+        "cancelledAt": "timestamp",
+        "cancellationReason": "string",
+        "feedback": "object { rating, comments, followUpNeeded }",
+        "createdAt": "timestamp",
+        "updatedAt": "timestamp"
+      }
+    },
+    "agents": {
+      "description": "Real estate agent profiles (extends users)",
+      "document_structure": {
+        "agentId": "string (document ID, references users)",
+        "licenseNumber": "string (unique)",
+        "licenseExpiry": "timestamp",
+        "brokerage": "string",
+        "yearsExperience": "number",
+        "specializations": "array of strings",
+        "serviceArea": "object { countries[], states[], cities[] }",
+        "phoneVerified": "boolean",
+        "emailVerified": "boolean",
+        "propertiesListed": "number",
+        "successfulDeals": "number",
+        "averageResponseTime": "number (minutes)",
+        "rating": "number (1-5)",
+        "reviewCount": "number",
+        "bankDetails": "object (encrypted) { accountNumber, routingNumber, bankName }",
+        "commissionRate": "number (percentage)",
+        "isActive": "boolean",
+        "createdAt": "timestamp"
+      }
+    },
+    "payments": {
+      "description": "Payment transactions and records",
+      "document_structure": {
+        "paymentId": "string (document ID)",
+        "userId": "string (reference to users)",
+        "bookingId": "string (reference to bookings, optional)",
+        "propertyId": "string (reference to properties, optional)",
+        "subscriptionId": "string (reference to subscriptions, optional)",
+        "amount": "number",
+        "currency": "string",
+        "paymentMethod": "string (enum: stripe, paypal, bank_transfer, crypto)",
+        "stripePaymentIntentId": "string",
+        "transactionId": "string (Stripe/PayPal ID)",
+        "status": "string (enum: pending, processing, completed, failed, refunded, disputed)",
+        "purpose": "string (enum: booking_fee, subscription, investment, commission)",
+        "metadata": "object { invoiceNumber, description }",
+        "processedAt": "timestamp",
+        "completedAt": "timestamp",
+        "failureReason": "string",
+        "refundAmount": "number",
+        "refundedAt": "timestamp",
+        "createdAt": "timestamp"
+      }
+    },
+    "notifications": {
+      "description": "User notifications and alerts",
+      "document_structure": {
+        "notificationId": "string (document ID)",
+        "userId": "string (reference to users)",
+        "type": "string (enum: booking_confirmation, property_alert, new_property_match, payment_update, message, system)",
+        "title": "string",
+        "body": "string",
+        "imageUrl": "string",
+        "actionUrl": "string",
+        "channelType": "array of strings (push, email, sms, whatsapp)",
+        "relatedEntityType": "string (property, booking, payment, etc)",
+        "relatedEntityId": "string",
+        "isRead": "boolean",
+        "readAt": "timestamp",
+        "priority": "string (enum: low, normal, high, urgent)",
+        "scheduleTime": "timestamp (for scheduled notifications)",
+        "sentAt": "timestamp",
+        "deliveryStatus": "object { push: status, email: status, sms: status, whatsapp: status }",
+        "createdAt": "timestamp",
+        "expiresAt": "timestamp"
+      }
+    },
+    "portfolio_items": {
+      "description": "User investment portfolio entries",
+      "document_structure": {
+        "portfolioId": "string (document ID)",
+        "userId": "string (reference to users)",
+        "propertyId": "string (reference to properties)",
+        "investmentAmount": "number",
+        "investmentDate": "timestamp",
+        "ownershipPercentage": "number",
+        "expectedReturns": "object { annual, total, roi }",
+        "currentValue": "number",
+        "appreciationRate": "number",
+        "rentIncome": "object { annual, lastReceived, frequency }",
+        "documents": "array of { type, url, uploadedAt }",
+        "status": "string (enum: active, pending, completed, liquidated)",
+        "exitDate": "timestamp",
+        "exitValue": "number",
+        "exitNotes": "string",
+        "createdAt": "timestamp",
+        "updatedAt": "timestamp"
+      }
+    },
+    "market_data": {
+      "description": "Market trends and analytics data",
+      "document_structure": {
+        "dataId": "string (document ID, formatted as: location_date_type)",
+        "location": "object { country, state, city, coordinates }",
+        "date": "timestamp",
+        "dataType": "string (enum: price_trends, demand, inventory, economic)",
+        "metrics": "object { avgPrice, priceChange, demandScore, inventoryLevel, etc }",
+        "historicalData": "array of { date, value }",
+        "forecast": "object { nextMonthTrend, nextQuarterTrend, confidence }",
+        "source": "string",
+        "updatedAt": "timestamp"
+      }
+    },
+    "subscriptions": {
+      "description": "User subscription plans",
+      "document_structure": {
+        "subscriptionId": "string (document ID)",
+        "userId": "string (reference to users)",
+        "planId": "string (free, basic, premium, enterprise)",
+        "planName": "string",
+        "features": "array of strings",
+        "monthlyPrice": "number",
+        "status": "string (enum: active, cancelled, paused, expired)",
+        "currentPeriodStart": "timestamp",
+        "currentPeriodEnd": "timestamp",
+        "stripeSubscriptionId": "string",
+        "autoRenew": "boolean",
+        "cancelledAt": "timestamp",
+        "cancellationReason": "string",
+        "createdAt": "timestamp"
+      }
+    },
+    "messages": {
+      "description": "In-app messaging between users",
+      "document_structure": {
+        "messageId": "string (document ID)",
+        "conversationId": "string (reference to conversations)",
+        "senderId": "string (reference to users)",
+        "recipientId": "string (reference to users)",
+        "content": "string",
+        "attachments": "array of { type, url, name, size }",
+        "messageType": "string (enum: text, image, document, video)",
+        "isRead": "boolean",
+        "readAt": "timestamp",
+        "editedAt": "timestamp",
+        "deletedAt": "timestamp",
+        "createdAt": "timestamp"
+      }
+    },
+    "conversations": {
+      "description": "Conversation threads between users",
+      "document_structure": {
+        "conversationId": "string (document ID)",
+        "participants": "array of user IDs",
+        "subject": "string",
+        "lastMessage": "string",
+        "lastMessageTime": "timestamp",
+        "unreadCount": "object (userId: count)",
+        "isArchived": "boolean",
+        "isPinned": "boolean",
+        "createdAt": "timestamp",
+        "updatedAt": "timestamp"
+      }
+    },
+    "support_tickets": {
+      "description": "Customer support tickets",
+      "document_structure": {
+        "ticketId": "string (document ID)",
+        "userId": "string (reference to users)",
+        "subject": "string",
+        "description": "string",
+        "category": "string (enum: technical, billing, account, property, other)",
+        "priority": "string (enum: low, medium, high, urgent)",
+        "status": "string (enum: open, in_progress, waiting_customer, resolved, closed)",
+        "assignedTo": "string (agent ID)",
+        "attachments": "array of { url, name, type }",
+        "responses": "array of { author, message, timestamp }",
+        "resolvedAt": "timestamp",
+        "resolutionNotes": "string",
+        "createdAt": "timestamp",
+        "updatedAt": "timestamp"
+      }
+    },
+    "analytics_events": {
+      "description": "User behavior analytics and events",
+      "document_structure": {
+        "eventId": "string (document ID)",
+        "userId": "string (reference to users)",
+        "eventName": "string",
+        "eventType": "string (enum: page_view, button_click, search, filter, share, etc)",
+        "properties": "object (custom event properties)",
+        "sessionId": "string",
+        "deviceInfo": "object { platform, osVersion, appVersion, userAgent }",
+        "timestamp": "timestamp"
+      }
+    }
+  },
+  "indexes": [
+    {
+      "collection": "properties",
+      "fields": [
+        { "path": "agentId", "order": "ASCENDING" },
+        { "path": "listingStatus", "order": "ASCENDING" },
+        { "path": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collection": "properties",
+      "fields": [
+        { "path": "address.city", "order": "ASCENDING" },
+        { "path": "price.amount", "order": "ASCENDING" },
+        { "path": "bedrooms", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collection": "bookings",
+      "fields": [
+        { "path": "userId", "order": "ASCENDING" },
+        { "path": "scheduledDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collection": "bookings",
+      "fields": [
+        { "path": "agentId", "order": "ASCENDING" },
+        { "path": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collection": "notifications",
+      "fields": [
+        { "path": "userId", "order": "ASCENDING" },
+        { "path": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collection": "portfolio_items",
+      "fields": [
+        { "path": "userId", "order": "ASCENDING" },
+        { "path": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collection": "market_data",
+      "fields": [
+        { "path": "location.city", "order": "ASCENDING" },
+        { "path": "date", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collection": "payments",
+      "fields": [
+        { "path": "userId", "order": "ASCENDING" },
+        { "path": "createdAt", "order": "DESCENDING" }
+      ]
+    }
+  ]
+}

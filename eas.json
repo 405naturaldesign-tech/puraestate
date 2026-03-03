@@ -1,0 +1,111 @@
+{
+  "build": {
+    "production": {
+      "channel": "production",
+      "distribution": "store",
+      "credentialsSource": "local",
+      "releaseChannel": "production",
+      "android": {
+        "gradleCommand": ":app:bundleRelease",
+        "image": "latest",
+        "buildType": "apk",
+        "ndk": "25.2.9519653",
+        "netrcFile": ".netrc"
+      },
+      "ios": {
+        "image": "latest",
+        "resourceClass": "medium",
+        "simulator": false
+      }
+    },
+    "staging": {
+      "channel": "staging",
+      "distribution": "internal",
+      "credentialsSource": "local",
+      "releaseChannel": "staging",
+      "android": {
+        "gradleCommand": ":app:bundleRelease",
+        "image": "latest",
+        "buildType": "apk",
+        "ndk": "25.2.9519653"
+      },
+      "ios": {
+        "image": "latest",
+        "resourceClass": "medium",
+        "simulator": false
+      }
+    },
+    "development": {
+      "channel": "development",
+      "distribution": "internal",
+      "credentialsSource": "local",
+      "releaseChannel": "development",
+      "android": {
+        "gradleCommand": ":app:assembleRelease",
+        "image": "latest",
+        "buildType": "apk",
+        "ndk": "25.2.9519653"
+      },
+      "ios": {
+        "image": "latest",
+        "resourceClass": "medium",
+        "simulator": true
+      }
+    },
+    "preview": {
+      "channel": "preview",
+      "distribution": "internal",
+      "credentialsSource": "local",
+      "releaseChannel": "preview",
+      "android": {
+        "gradleCommand": ":app:bundleRelease",
+        "image": "latest",
+        "buildType": "aab",
+        "ndk": "25.2.9519653"
+      },
+      "ios": {
+        "image": "latest",
+        "resourceClass": "medium",
+        "simulator": false
+      }
+    }
+  },
+  "submit": {
+    "production-ios": {
+      "ios": {
+        "appleId": "YOUR_APPLE_ID",
+        "appleIdPassword": "@keychain:APPLE_ID_PASSWORD",
+        "appleTeamId": "YOUR_APPLE_TEAM_ID",
+        "ascAppId": "YOUR_APP_STORE_CONNECT_ID",
+        "signingCertificateSource": "local"
+      }
+    },
+    "production-android": {
+      "android": {
+        "serviceAccount": "@file:./credentials.json",
+        "track": "production",
+        "releaseStatus": "completed",
+        "changesNotSentForReview": false
+      }
+    },
+    "staging-ios": {
+      "ios": {
+        "appleId": "YOUR_APPLE_ID",
+        "appleIdPassword": "@keychain:APPLE_ID_PASSWORD",
+        "appleTeamId": "YOUR_APPLE_TEAM_ID",
+        "ascAppId": "YOUR_APP_STORE_CONNECT_ID",
+        "signingCertificateSource": "local"
+      }
+    },
+    "staging-android": {
+      "android": {
+        "serviceAccount": "@file:./credentials.json",
+        "track": "internal",
+        "releaseStatus": "draft"
+      }
+    }
+  },
+  "cli": {
+    "version": ">= 5.0.0"
+  }
+}

@@ -1,0 +1,186 @@
+{
+  "name": "PuraEstate - Lead Scoring Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */6 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-scoring",
+      "name": "Every 6 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  l.id AS lead_id,\n  l.email,\n  l.first_name,\n  l.last_name,\n  l.budget,\n  l.timeline,\n  l.financing_type,\n  l.phone,\n  l.viewing_requested,\n  l.property_id,\n  l.lead_score AS current_score,\n  l.status,\n  l.submitted_at,\n  -- Activity signals\n  COUNT(DISTINCT li.id) AS page_views,\n  COUNT(DISTINCT CASE WHEN li.interaction_type = 'property_view' THEN li.id END) AS property_views,\n  COUNT(DISTINCT CASE WHEN li.interaction_type = 'saved_property' THEN li.id END) AS saved_properties,\n  COUNT(DISTINCT CASE WHEN li.interaction_type = 'email_open' THEN li.id END) AS email_opens,\n  COUNT(DISTINCT CASE WHEN li.interaction_type = 'email_click' THEN li.id END) AS email_clicks,\n  COUNT(DISTINCT CASE WHEN li.interaction_type = 'viewing_request' THEN li.id END) AS viewing_requests,\n  COUNT(DISTINCT CASE WHEN li.interaction_type = 'callback_request' THEN li.id END) AS callback_requests,\n  MAX(li.created_at) AS last_interaction\nFROM leads l\nLEFT JOIN lead_interactions li ON li.lead_id = l.id\nWHERE l.status NOT IN ('converted', 'lost', 'unsubscribed')\nGROUP BY l.id, l.email, l.first_name, l.last_name, l.budget, l.timeline, \n         l.financing_type, l.phone, l.viewing_requested, l.property_id,\n         l.lead_score, l.status, l.submitted_at\nHAVING l.id IS NOT NULL;",
+        "options": {}
+      },
+      "id": "postgres-get-leads",
+      "name": "Get Leads for Scoring",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const lead = $input.first().json;\n\n// ========================================\n// PURAESTATE LEAD SCORING SYSTEM v2\n// Max Score: 100 points\n// ========================================\n\nlet score = 0;\nconst scoreBreakdown = {};\n\n// --- DEMOGRAPHIC SIGNALS (30 pts max) ---\n\n// Budget indicates seriousness\nif (lead.budget >= 5000000) { score += 20; scoreBreakdown.budget = 20; }\nelse if (lead.budget >= 2000000) { score += 15; scoreBreakdown.budget = 15; }\nelse if (lead.budget >= 500000) { score += 10; scoreBreakdown.budget = 10; }\nelse if (lead.budget > 0) { score += 5; scoreBreakdown.budget = 5; }\n\n// Financing readiness\nif (lead.financing_type === 'cash') { score += 10; scoreBreakdown.financing = 10; }\nelse if (lead.financing_type === 'bond_approved') { score += 8; scoreBreakdown.financing = 8; }\nelse if (lead.financing_type === 'bond_applying') { score += 5; scoreBreakdown.financing = 5; }\n\n// Has phone number (contactable)\nif (lead.phone && lead.phone.length > 9) { score += 5; scoreBreakdown.phone = 5; }\n\n// --- INTENT SIGNALS (40 pts max) ---\n\n// Purchase timeline\nif (lead.timeline === 'immediate') { score += 20; scoreBreakdown.timeline = 20; }\nelse if (lead.timeline === '1_3_months') { score += 15; scoreBreakdown.timeline = 15; }\nelse if (lead.timeline === '3_6_months') { score += 10; scoreBreakdown.timeline = 10; }\nelse if (lead.timeline === '6_12_months') { score += 5; scoreBreakdown.timeline = 5; }\nelse if (lead.timeline === 'just_browsing') { score += 1; scoreBreakdown.timeline = 1; }\n\n// Viewing requested = strong intent\nif (lead.viewing_requested) { score += 10; scoreBreakdown.viewing_requested = 10; }\n\n// Enquired about specific property = high intent\nif (lead.property_id) { score += 10; scoreBreakdown.property_specific = 10; }\n\n// --- BEHAVIORAL SIGNALS (30 pts max) ---\n\n// Property views on site\nconst propViews = Number(lead.property_views || 0);\nif (propViews >= 10) { score += 8; scoreBreakdown.property_views = 8; }\nelse if (propViews >= 5) { score += 5; scoreBreakdown.property_views = 5; }\nelse if (propViews >= 2) { score += 3; scoreBreakdown.property_views = 3; }\n\n// Saved properties = serious interest\nconst saved = Number(lead.saved_properties || 0);\nif (saved >= 3) { score += 7; scoreBreakdown.saved = 7; }\nelse if (saved >= 1) { score += 4; scoreBreakdown.saved = 4; }\n\n// Email engagement\nconst emailOpens = Number(lead.email_opens || 0);\nconst emailClicks = Number(lead.email_clicks || 0);\nif (emailClicks >= 3) { score += 8; scoreBreakdown.email_engagement = 8; }\nelse if (emailClicks >= 1) { score += 5; scoreBreakdown.email_engagement = 5; }\nelse if (emailOpens >= 3) { score += 3; scoreBreakdown.email_engagement = 3; }\n\n// Viewing requests\nconst viewingReqs = Number(lead.viewing_requests || 0);\nif (viewingReqs >= 1) { score += 7; scoreBreakdown.viewing_requests = 7; }\n\n// Recency decay - reduce score if no activity\nconst lastInteraction = lead.last_interaction ? new Date(lead.last_interaction) : new Date(lead.submitted_at);\nconst daysSinceActivity = (Date.now() - lastInteraction.getTime()) / (1000 * 60 * 60 * 24);\nif (daysSinceActivity > 30) { score = Math.max(0, score - 20); scoreBreakdown.decay = -20; }\nelse if (daysSinceActivity > 14) { score = Math.max(0, score - 10); scoreBreakdown.decay = -10; }\nelse if (daysSinceActivity > 7) { score = Math.max(0, score - 5); scoreBreakdown.decay = -5; }\n\n// Cap at 100\nscore = Math.min(100, Math.max(0, score));\n\n// Determine lead tier\nlet tier = 'cold';\nif (score >= 70) tier = 'hot';\nelse if (score >= 40) tier = 'warm';\n\nconst scoreChanged = score !== Number(lead.current_score);\nconst becameHot = tier === 'hot' && lead.current_score < 70;\n\nreturn [{\n  json: {\n    lead_id: lead.lead_id,\n    email: lead.email,\n    first_name: lead.first_name,\n    last_name: lead.last_name,\n    new_score: score,\n    old_score: lead.current_score,\n    tier,\n    score_changed: scoreChanged,\n    became_hot: becameHot,\n    score_breakdown: JSON.stringify(scoreBreakdown),\n    days_since_activity: Math.round(daysSinceActivity)\n  }\n}];"
+      },
+      "id": "code-score",
+      "name": "Calculate Lead Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE leads \nSET \n  lead_score = {{ $json.new_score }},\n  lead_tier = '{{ $json.tier }}',\n  score_breakdown = '{{ $json.score_breakdown }}',\n  score_updated_at = NOW()\nWHERE id = {{ $json.lead_id }}\nRETURNING id, email, lead_score, lead_tier;",
+        "options": {}
+      },
+      "id": "postgres-update-score",
+      "name": "Update Lead Score",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [900, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "became-hot",
+              "leftValue": "={{ $('Calculate Lead Score').item.json.became_hot }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-hot-lead",
+      "name": "Just Became Hot Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "channel": "#hot-leads",
+        "text": "=:fire: *HOT LEAD ALERT* :fire:\n\n{{ $('Calculate Lead Score').item.json.first_name }} {{ $('Calculate Lead Score').item.json.last_name }}\nEmail: {{ $('Calculate Lead Score').item.json.email }}\nScore: {{ $('Calculate Lead Score').item.json.old_score }} → *{{ $('Calculate Lead Score').item.json.new_score }}*\nTier: {{ $('Calculate Lead Score').item.json.tier.toUpperCase() }}\n\nThis lead just crossed the HOT threshold! Contact them ASAP.\n<https://puraestate.co.za/admin/leads/{{ $('Calculate Lead Score').item.json.lead_id }}|View Lead Profile>",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "slack-hot-lead",
+      "name": "Alert Hot Lead to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [1340, 200],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-puraestate",
+          "name": "PuraEstate Slack"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 6 Hours": {
+      "main": [
+        [
+          {
+            "node": "Get Leads for Scoring",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Leads for Scoring": {
+      "main": [
+        [
+          {
+            "node": "Calculate Lead Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Lead Score": {
+      "main": [
+        [
+          {
+            "node": "Update Lead Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Lead Score": {
+      "main": [
+        [
+          {
+            "node": "Just Became Hot Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Just Became Hot Lead?": {
+      "main": [
+        [
+          {
+            "node": "Alert Hot Lead to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["lead-management", "scoring", "puraestate"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}

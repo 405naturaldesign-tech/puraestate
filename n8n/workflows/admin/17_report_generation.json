@@ -1,0 +1,209 @@
+{
+  "name": "PuraEstate - Analytics Report Generation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 1 * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-monthly-report",
+      "name": "1st of Month 6AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  TO_CHAR(DATE_TRUNC('month', created_at), 'YYYY-MM') AS month,\n  COUNT(*) AS total_listings,\n  COUNT(DISTINCT province) AS provinces,\n  COUNT(DISTINCT source) AS sources,\n  ROUND(AVG(price)::numeric, 0) AS avg_price,\n  ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price)::numeric, 0) AS median_price,\n  MIN(price) AS min_price,\n  MAX(price) AS max_price,\n  COUNT(CASE WHEN property_type = 'house' THEN 1 END) AS houses,\n  COUNT(CASE WHEN property_type = 'apartment' THEN 1 END) AS apartments,\n  COUNT(CASE WHEN property_type = 'townhouse' THEN 1 END) AS townhouses,\n  COUNT(CASE WHEN property_type = 'plot' THEN 1 END) AS plots\nFROM properties\nWHERE created_at >= NOW() - INTERVAL '13 months'\nAND price > 0\nGROUP BY DATE_TRUNC('month', created_at)\nORDER BY month DESC\nLIMIT 13;",
+        "options": {}
+      },
+      "id": "postgres-monthly-trend",
+      "name": "Monthly Listing Trends",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  province,\n  COUNT(*) AS total_listings,\n  COUNT(CASE WHEN created_at >= DATE_TRUNC('month', NOW()) - INTERVAL '1 month' \n        AND created_at < DATE_TRUNC('month', NOW()) THEN 1 END) AS last_month,\n  COUNT(CASE WHEN created_at >= DATE_TRUNC('month', NOW()) - INTERVAL '2 months'\n        AND created_at < DATE_TRUNC('month', NOW()) - INTERVAL '1 month' THEN 1 END) AS prev_month,\n  ROUND(AVG(CASE WHEN created_at >= DATE_TRUNC('month', NOW()) - INTERVAL '1 month' THEN price END)::numeric, 0) AS last_month_avg_price,\n  ROUND(AVG(CASE WHEN created_at >= DATE_TRUNC('month', NOW()) - INTERVAL '2 months'\n        AND created_at < DATE_TRUNC('month', NOW()) - INTERVAL '1 month' THEN price END)::numeric, 0) AS prev_month_avg_price\nFROM properties\nWHERE status IN ('active', 'stale')\nAND price > 0\nAND province IS NOT NULL AND province != ''\nGROUP BY province\nORDER BY last_month DESC;",
+        "options": {}
+      },
+      "id": "postgres-province-trends",
+      "name": "Province Trends",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 400],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  DATE_TRUNC('month', created_at)::date AS month,\n  COUNT(*) AS new_leads,\n  COUNT(CASE WHEN status = 'converted' THEN 1 END) AS conversions,\n  COUNT(CASE WHEN status = 'lost' THEN 1 END) AS lost,\n  ROUND(\n    COUNT(CASE WHEN status = 'converted' THEN 1 END)::numeric / \n    NULLIF(COUNT(*), 0) * 100, 1\n  ) AS conversion_rate\nFROM leads\nWHERE created_at >= NOW() - INTERVAL '13 months'\nGROUP BY DATE_TRUNC('month', created_at)\nORDER BY month DESC\nLIMIT 13;",
+        "options": {}
+      },
+      "id": "postgres-lead-trends",
+      "name": "Lead & Conversion Trends",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 600],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const monthlyTrends = $('Monthly Listing Trends').all().map(i => i.json);\nconst provinceTrends = $('Province Trends').all().map(i => i.json);\nconst leadTrends = $('Lead & Conversion Trends').all().map(i => i.json);\n\nconst currentMonth = monthlyTrends[0] || {};\nconst prevMonth = monthlyTrends[1] || {};\n\nconst fmt = (n) => 'R ' + Number(n).toLocaleString('en-ZA', { maximumFractionDigits: 0 });\nconst pct = (curr, prev) => {\n  if (!prev || prev == 0) return 'N/A';\n  const change = ((curr - prev) / prev * 100).toFixed(1);\n  return change > 0 ? `+${change}%` : `${change}%`;\n};\n\nconst reportPeriod = new Date();\nreportPeriod.setMonth(reportPeriod.getMonth() - 1);\nconst reportMonthName = reportPeriod.toLocaleDateString('en-ZA', { month: 'long', year: 'numeric' });\n\nconst emailHtml = `\n<!DOCTYPE html>\n<html>\n<head>\n<style>\nbody{font-family:'Helvetica Neue',sans-serif;color:#333;margin:0;background:#f0f4f0;}\n.container{max-width:750px;margin:0 auto;background:white;}\n.header{background:linear-gradient(135deg,#1a472a,#40916c);color:white;padding:40px;text-align:center;}\n.header h1{margin:0;font-size:26px;letter-spacing:1px;}\n.header .period{opacity:0.85;margin-top:6px;font-size:15px;}\n.section{padding:30px 35px;border-bottom:1px solid #eee;}\n.section h2{color:#1a472a;font-size:17px;text-transform:uppercase;letter-spacing:0.5px;margin:0 0 20px;}\n.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}\n.kpi{background:#f0f7f0;border-radius:8px;padding:16px;text-align:center;}\n.kpi .value{font-size:24px;font-weight:900;color:#1a472a;}\n.kpi .label{font-size:11px;color:#666;text-transform:uppercase;margin-top:4px;}\n.kpi .change{font-size:12px;margin-top:4px;}\n.up{color:#27ae60;} .down{color:#e74c3c;}\ntable{width:100%;border-collapse:collapse;font-size:13px;}\nth{background:#f0f7f0;color:#1a472a;padding:10px;text-align:left;font-size:12px;text-transform:uppercase;}\ntd{padding:10px;border-bottom:1px solid #f0f0f0;}\ntr:hover{background:#fafafa;}\n.footer{background:#1a472a;color:rgba(255,255,255,0.7);padding:25px;text-align:center;font-size:12px;}\n</style></head>\n<body><div class=\"container\">\n\n<div class=\"header\">\n  <h1>PuraEstate Monthly Analytics Report</h1>\n  <div class=\"period\">${reportMonthName}</div>\n</div>\n\n<div class=\"section\">\n  <h2>Key Performance Indicators</h2>\n  <div class=\"kpi-grid\">\n    <div class=\"kpi\">\n      <div class=\"value\">${Number(currentMonth.total_listings || 0).toLocaleString()}</div>\n      <div class=\"label\">Total Listings</div>\n      <div class=\"change ${Number(currentMonth.total_listings) >= Number(prevMonth.total_listings) ? 'up' : 'down'}\">\n        ${pct(currentMonth.total_listings, prevMonth.total_listings)} vs prev month\n      </div>\n    </div>\n    <div class=\"kpi\">\n      <div class=\"value\">${fmt(currentMonth.avg_price || 0)}</div>\n      <div class=\"label\">Avg Price</div>\n      <div class=\"change ${Number(currentMonth.avg_price) >= Number(prevMonth.avg_price) ? 'up' : 'down'}\">\n        ${pct(currentMonth.avg_price, prevMonth.avg_price)} vs prev month\n      </div>\n    </div>\n    <div class=\"kpi\">\n      <div class=\"value\">${fmt(currentMonth.median_price || 0)}</div>\n      <div class=\"label\">Median Price</div>\n      <div class=\"change\">&nbsp;</div>\n    </div>\n    <div class=\"kpi\">\n      <div class=\"value\">${currentMonth.provinces || 0}</div>\n      <div class=\"label\">Provinces</div>\n      <div class=\"change\">&nbsp;</div>\n    </div>\n  </div>\n</div>\n\n<div class=\"section\">\n  <h2>Province Breakdown</h2>\n  <table>\n    <tr><th>Province</th><th>This Month</th><th>Prev Month</th><th>Change</th><th>Avg Price</th></tr>\n    ${provinceTrends.map(p => {\n      const change = Number(p.last_month) - Number(p.prev_month);\n      const changeStr = change > 0 ? `<span class=\"up\">+${change}</span>` : `<span class=\"down\">${change}</span>`;\n      return `<tr><td>${p.province}</td><td>${p.last_month}</td><td>${p.prev_month}</td><td>${changeStr}</td><td>${fmt(p.last_month_avg_price)}</td></tr>`;\n    }).join('')}\n  </table>\n</div>\n\n<div class=\"section\">\n  <h2>12-Month Listing Trend</h2>\n  <table>\n    <tr><th>Month</th><th>Listings</th><th>Avg Price</th><th>Houses</th><th>Apts</th></tr>\n    ${monthlyTrends.slice(0, 12).map(m => `\n    <tr><td>${m.month}</td><td>${m.total_listings}</td><td>${fmt(m.avg_price)}</td><td>${m.houses}</td><td>${m.apartments}</td></tr>`).join('')}\n  </table>\n</div>\n\n${leadTrends.length > 0 ? `\n<div class=\"section\">\n  <h2>Lead Performance</h2>\n  <table>\n    <tr><th>Month</th><th>New Leads</th><th>Conversions</th><th>Lost</th><th>Rate</th></tr>\n    ${leadTrends.slice(0, 6).map(l => `\n    <tr><td>${l.month}</td><td>${l.new_leads}</td><td>${l.conversions}</td><td>${l.lost}</td><td>${l.conversion_rate}%</td></tr>`).join('')}\n  </table>\n</div>` : ''}\n\n<div class=\"footer\">PuraEstate Intelligence Platform | Confidential - Internal Use Only</div>\n</div></body></html>`;\n\nreturn [{\n  json: {\n    report_period: reportMonthName,\n    email_html: emailHtml,\n    subject: `PuraEstate Monthly Analytics Report - ${reportMonthName}`,\n    total_listings: currentMonth.total_listings,\n    avg_price: currentMonth.avg_price,\n    provinces: currentMonth.provinces\n  }\n}];"
+      },
+      "id": "code-build-report",
+      "name": "Build Analytics Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 400]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.STAKEHOLDER_EMAILS }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "html",
+        "message": "={{ $json.email_html }}",
+        "options": {}
+      },
+      "id": "email-report",
+      "name": "Email Report to Stakeholders",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [920, 300],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-puraestate",
+          "name": "PuraEstate SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "#reports",
+        "text": "=*Monthly Analytics Report - {{ $json.report_period }}* :bar_chart:\nTotal Listings: {{ $json.total_listings }}\nAvg Price: R{{ Number($json.avg_price).toLocaleString() }}\nProvinces: {{ $json.provinces }}\n\nFull report emailed to stakeholders.",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "slack-report-sent",
+      "name": "Notify Report Sent",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [920, 500],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-puraestate",
+          "name": "PuraEstate Slack"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "1st of Month 6AM": {
+      "main": [
+        [
+          {
+            "node": "Monthly Listing Trends",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Province Trends",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Lead & Conversion Trends",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Monthly Listing Trends": {
+      "main": [
+        [
+          {
+            "node": "Build Analytics Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Province Trends": {
+      "main": [
+        [
+          {
+            "node": "Build Analytics Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead & Conversion Trends": {
+      "main": [
+        [
+          {
+            "node": "Build Analytics Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Analytics Report": {
+      "main": [
+        [
+          {
+            "node": "Email Report to Stakeholders",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Notify Report Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["admin", "reports", "analytics", "puraestate"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}

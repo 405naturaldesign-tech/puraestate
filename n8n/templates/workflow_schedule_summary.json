@@ -1,0 +1,205 @@
+{
+  "description": "PuraEstate n8n Workflow Schedule Summary",
+  "workflows": [
+    {
+      "file": "workflows/data-collection/01_daily_property_scraping.json",
+      "name": "Daily Property Scraping",
+      "trigger": "Cron: 0 6 * * * (Daily at 6:00 AM SAST)",
+      "category": "Data Collection",
+      "estimated_duration": "5-15 minutes",
+      "dependencies": ["Flask API at localhost:5000", "PostgreSQL", "Slack"],
+      "outputs": ["Properties stored in DB", "Slack #property-updates summary"],
+      "notes": "Scrapes all configured sources. Adjust max_price and provinces in node parameters."
+    },
+    {
+      "file": "workflows/data-collection/02_facebook_marketplace_monitor.json",
+      "name": "Facebook Marketplace Monitor",
+      "trigger": "Cron: 0 */2 * * * (Every 2 hours)",
+      "category": "Data Collection",
+      "estimated_duration": "2-5 minutes",
+      "dependencies": ["Flask API with Facebook scraper", "PostgreSQL", "Slack"],
+      "outputs": ["New FB listings stored in DB", "Slack #new-listings per new listing"],
+      "notes": "Requires Flask to implement /api/facebook/marketplace/scrape endpoint using Selenium or Playwright."
+    },
+    {
+      "file": "workflows/data-collection/03_facebook_group_monitor.json",
+      "name": "Facebook Group Monitor",
+      "trigger": "Cron: 0 */3 * * * (Every 3 hours)",
+      "category": "Data Collection",
+      "estimated_duration": "3-10 minutes",
+      "dependencies": ["Flask API with group scraper", "PostgreSQL"],
+      "outputs": ["Valid listings stored in DB", "Unpriced posts stored in fb_group_raw_posts"],
+      "notes": "Update group IDs in 'Load Group List' node with real South African property group IDs."
+    },
+    {
+      "file": "workflows/data-collection/04_email_inbox_parsing.json",
+      "name": "Email Inbox Parser",
+      "trigger": "Cron: */15 * * * * (Every 15 minutes)",
+      "category": "Data Collection",
+      "estimated_duration": "30 seconds - 2 minutes",
+      "dependencies": ["IMAP email account (listings@puraestate.co.za)", "PostgreSQL", "Slack"],
+      "outputs": ["Parsed listings stored in DB", "Slack #inbox-listings notification"],
+      "notes": "Forward property listing emails to listings@puraestate.co.za. Status set to 'pending_review'."
+    },
+    {
+      "file": "workflows/data-collection/05_webhook_ingestion.json",
+      "name": "Webhook Listing Ingestion",
+      "trigger": "Webhook: POST /webhook/puraestate/listings/ingest",
+      "category": "Data Collection",
+      "estimated_duration": "< 1 second",
+      "dependencies": ["PostgreSQL", "Slack"],
+      "outputs": ["Property stored in DB", "JSON response", "Slack #webhook-ingestion"],
+      "notes": "Webhook is always listening. Validates API key from x-api-key header."
+    },
+    {
+      "file": "workflows/alerts/06_price_drop_alerts.json",
+      "name": "Price Drop Alerts",
+      "trigger": "Cron: 0 9 * * * (Daily at 9:00 AM SAST)",
+      "category": "Alerts",
+      "estimated_duration": "1-3 minutes",
+      "dependencies": ["PostgreSQL (price_history table)", "Slack", "SMTP", "WhatsApp API"],
+      "outputs": ["Slack #price-drops", "Personalized emails to subscribers", "WhatsApp messages"],
+      "notes": "Requires price_history table populated by the DB trigger. Set min drop percentage (default 3%) in SQL query."
+    },
+    {
+      "file": "workflows/alerts/07_new_listing_notifications.json",
+      "name": "New Listing Notifications",
+      "trigger": "Cron: 0 8,12,17 * * * (3x daily: 8am, 12pm, 5pm SAST)",
+      "category": "Alerts",
+      "estimated_duration": "2-5 minutes",
+      "dependencies": ["PostgreSQL (saved_searches)", "SMTP", "Twilio SMS"],
+      "outputs": ["Personalized emails to subscribers", "SMS via Twilio", "notification_log updated"],
+      "notes": "Matches listings from last 6 hours against saved search criteria."
+    },
+    {
+      "file": "workflows/alerts/08_market_summary.json",
+      "name": "Market Summary Report",
+      "trigger": "Cron: 0 7 * * 1 (Weekly Monday 7:00 AM SAST)",
+      "category": "Alerts",
+      "estimated_duration": "1-2 minutes",
+      "dependencies": ["PostgreSQL", "Slack", "SMTP"],
+      "outputs": ["Slack #market-reports message", "HTML report emailed to stakeholders"],
+      "notes": "STAKEHOLDER_EMAILS env var controls who receives the report."
+    },
+    {
+      "file": "workflows/alerts/09_agent_performance_alerts.json",
+      "name": "Agent Performance Alerts",
+      "trigger": "Cron: 0 8 * * 5 (Weekly Friday 8:00 AM SAST)",
+      "category": "Alerts",
+      "estimated_duration": "30 seconds",
+      "dependencies": ["PostgreSQL (agents, leads tables)", "Slack", "SMTP"],
+      "outputs": ["Slack #agent-performance leaderboard", "Manager email for agents below threshold"],
+      "notes": "Thresholds: <10% conversion rate, >5 overdue follow-ups trigger manager alert."
+    },
+    {
+      "file": "workflows/integrations/10_crm_sync_pipedrive.json",
+      "name": "CRM Sync (Pipedrive)",
+      "trigger": "Cron: */30 * * * * (Every 30 minutes)",
+      "category": "Integrations",
+      "estimated_duration": "1-5 minutes",
+      "dependencies": ["PostgreSQL", "Pipedrive API (PIPEDRIVE_API_TOKEN)"],
+      "outputs": ["Pipedrive deals created", "crm_sync_log updated"],
+      "notes": "Set Pipedrive pipeline_id and stage_id in the Create Deal node. Get custom field keys from Pipedrive API."
+    },
+    {
+      "file": "workflows/integrations/11_google_sheets_sync.json",
+      "name": "Google Sheets Sync",
+      "trigger": "Cron: 0 */4 * * * (Every 4 hours)",
+      "category": "Integrations",
+      "estimated_duration": "2-10 minutes",
+      "dependencies": ["PostgreSQL", "Google Sheets OAuth2 (GOOGLE_SHEET_ID_PROPERTIES)"],
+      "outputs": ["Google Sheet refreshed with latest 1000 properties", "Summary tab updated"],
+      "notes": "Create Google Sheet with 'Properties' and 'Summary' tabs before activating."
+    },
+    {
+      "file": "workflows/integrations/12_email_campaigns.json",
+      "name": "Email Campaigns (Weekly Digest)",
+      "trigger": "Cron: 0 10 * * 3 (Wednesday 10:00 AM SAST)",
+      "category": "Integrations",
+      "estimated_duration": "10-30 minutes depending on list size",
+      "dependencies": ["PostgreSQL (email_subscribers)", "SMTP"],
+      "outputs": ["Personalized weekly digest emails", "Subscriber last_email_sent updated"],
+      "notes": "Sends max 500 emails per run. Personalizes based on province_preference and budget."
+    },
+    {
+      "file": "workflows/integrations/13_slack_daily_listings_by_province.json",
+      "name": "Slack Daily Listings by Province",
+      "trigger": "Cron: 0 8 * * 1-5 (Weekdays 8:00 AM SAST)",
+      "category": "Integrations",
+      "estimated_duration": "30 seconds",
+      "dependencies": ["PostgreSQL", "Slack"],
+      "outputs": ["#daily-listings overview", "Province-specific channel posts"],
+      "notes": "Create Slack channels: #wc-listings, #gp-listings, #kzn-listings, etc. and invite bot."
+    },
+    {
+      "file": "workflows/admin/14_database_backup.json",
+      "name": "Database Backup to S3",
+      "trigger": "Cron: 0 2 * * * (Daily at 2:00 AM SAST)",
+      "category": "Admin",
+      "estimated_duration": "5-20 minutes",
+      "dependencies": ["pg_dump installed on server", "AWS CLI configured", "S3 bucket"],
+      "outputs": ["Compressed SQL backup in S3", "backup_log updated", "Slack #ops-alerts"],
+      "notes": "Ensure pg_dump and aws CLI are installed on VPS. Set PGPASSWORD or use ~/.pgpass file."
+    },
+    {
+      "file": "workflows/admin/15_health_monitoring.json",
+      "name": "Health Monitoring",
+      "trigger": "Cron: */10 * * * * (Every 10 minutes)",
+      "category": "Admin",
+      "estimated_duration": "30 seconds",
+      "dependencies": ["All service endpoints", "PostgreSQL", "Slack", "SMTP"],
+      "outputs": ["health_checks log", "Slack #alerts on repeated failures", "Email to OPS_EMAIL"],
+      "notes": "Alerts only after 2 consecutive failures in 20 min to prevent false positives. Customize service URLs."
+    },
+    {
+      "file": "workflows/admin/16_data_quality.json",
+      "name": "Data Quality & Deduplication",
+      "trigger": "Cron: 0 3 * * * (Daily at 3:00 AM SAST)",
+      "category": "Admin",
+      "estimated_duration": "5-15 minutes",
+      "dependencies": ["PostgreSQL"],
+      "outputs": ["Duplicate listings flagged", "Stale listings removed", "Provinces normalized", "Slack #data-quality report"],
+      "notes": "Marks duplicates as 'duplicate' status (not deleted). Stale = no update in 30 days."
+    },
+    {
+      "file": "workflows/admin/17_report_generation.json",
+      "name": "Monthly Analytics Reports",
+      "trigger": "Cron: 0 6 1 * * (1st of every month at 6:00 AM)",
+      "category": "Admin",
+      "estimated_duration": "1-2 minutes",
+      "dependencies": ["PostgreSQL", "SMTP"],
+      "outputs": ["HTML analytics report emailed to STAKEHOLDER_EMAILS", "Slack #reports"],
+      "notes": "Covers: 12-month trends, province breakdown, property types, lead conversion."
+    },
+    {
+      "file": "workflows/lead-management/18_inquiry_form_processing.json",
+      "name": "Inquiry Form Processing",
+      "trigger": "Webhook: POST /webhook/puraestate/inquiry",
+      "category": "Lead Management",
+      "estimated_duration": "< 1 second",
+      "dependencies": ["PostgreSQL (leads, agents)", "SMTP", "Slack"],
+      "outputs": ["Lead created in DB", "Confirmation email to inquirer", "Agent assigned", "Slack #new-leads"],
+      "notes": "Connect website inquiry form to this webhook. Automatically assigns to least-busy agent."
+    },
+    {
+      "file": "workflows/lead-management/19_lead_scoring.json",
+      "name": "Lead Scoring Engine",
+      "trigger": "Cron: 0 */6 * * * (Every 6 hours)",
+      "category": "Lead Management",
+      "estimated_duration": "1-5 minutes",
+      "dependencies": ["PostgreSQL (leads, lead_interactions)"],
+      "outputs": ["Lead scores updated", "Tier classification updated", "Slack #hot-leads for new hot leads"],
+      "notes": "Scoring factors: budget (20pts), timeline (20pts), activity (30pts), intent (30pts). Requires tracking lead_interactions."
+    },
+    {
+      "file": "workflows/lead-management/20_followup_reminders.json",
+      "name": "Follow-up Reminders",
+      "trigger": "Cron: 0 8 * * 1-5 (Weekdays 8:00 AM SAST)",
+      "category": "Lead Management",
+      "estimated_duration": "1-3 minutes",
+      "dependencies": ["PostgreSQL (leads, agents, follow_up_reminders)", "SMTP", "Slack"],
+      "outputs": ["Personalized reminder digest emailed to each agent", "Slack #follow-ups"],
+      "notes": "Hot leads: reminder after 1 day. Warm: 3 days. Cold: 7 days. Create manual reminders in follow_up_reminders table."
+    }
+  ]
+}

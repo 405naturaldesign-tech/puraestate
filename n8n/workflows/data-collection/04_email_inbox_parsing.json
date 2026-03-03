@@ -1,0 +1,195 @@
+{
+  "name": "PuraEstate - Email Inbox Parser",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/15 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-email-check",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "mailbox": "INBOX",
+        "action": "read",
+        "downloadAttachments": false,
+        "filters": {
+          "seen": false,
+          "since": "={{ new Date(Date.now() - 15 * 60 * 1000).toISOString() }}"
+        },
+        "options": {
+          "allowUnauthorizedCerts": false,
+          "customEmailConfig": "[INBOX]",
+          "forceReconnect": true
+        }
+      },
+      "id": "imap-read",
+      "name": "Read Unread Emails",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [460, 300],
+      "credentials": {
+        "imap": {
+          "id": "imap-puraestate",
+          "name": "PuraEstate IMAP listings@puraestate.co.za"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const email = $input.first().json;\nconst subject = email.subject || '';\nconst body = email.text || email.html || '';\nconst from = email.from?.value?.[0]?.address || email.from || '';\n\n// Check if this is a property listing email\nconst propertyKeywords = ['for sale', 'listing', 'property', 'bedroom', 'bathroom', 'R ', 'price', 'asking', 'offers from', 'ne property', 'house', 'apartment', 'flat'];\nconst isPropertyEmail = propertyKeywords.some(kw => \n  subject.toLowerCase().includes(kw.toLowerCase()) || \n  body.toLowerCase().includes(kw.toLowerCase())\n);\n\nif (!isPropertyEmail) {\n  return [{ json: { skip: true, reason: 'Not a property listing email', subject } }];\n}\n\n// Extract price\nconst pricePatterns = [\n  /R\\s?([\\d][\\d\\s,\\.]{2,})/g,\n  /(?:price|asking|offers?(?:\\s+from)?)\\s*:?\\s*R?\\s?([\\d][\\d\\s,\\.]{2,})/gi,\n  /([\\d\\.]+)\\s*million/gi\n];\n\nlet price = 0;\nfor (const pattern of pricePatterns) {\n  const match = body.match(pattern);\n  if (match) {\n    let priceStr = match[0].replace(/[R\\s,price:askingofferfrom]/gi, '').trim();\n    if (priceStr.toLowerCase().includes('million') || priceStr.toLowerCase().includes('m')) {\n      price = parseFloat(priceStr) * 1000000;\n    } else {\n      price = parseFloat(priceStr.replace(/[^\\d.]/g, ''));\n    }\n    if (price > 50000 && price < 200000000) break;\n  }\n}\n\n// Extract bedrooms\nconst bedroomMatch = body.match(/(\\d+)\\s*(?:bed(?:room)?s?|br)/i);\nconst bedrooms = bedroomMatch ? parseInt(bedroomMatch[1]) : 0;\n\n// Extract bathrooms\nconst bathroomMatch = body.match(/(\\d+)\\s*(?:bath(?:room)?s?|ba)/i);\nconst bathrooms = bathroomMatch ? parseInt(bathroomMatch[1]) : 0;\n\n// Extract area/size\nconst sizeMatch = body.match(/(\\d+)\\s*(?:m2|sqm|square\\s*met)/i);\nconst size = sizeMatch ? parseFloat(sizeMatch[1]) : 0;\n\n// Extract property type\nlet propertyType = 'unknown';\nconst bodyLower = body.toLowerCase();\nif (bodyLower.includes('apartment') || bodyLower.includes('flat')) propertyType = 'apartment';\nelse if (bodyLower.includes('townhouse')) propertyType = 'townhouse';\nelse if (bodyLower.includes('plot') || bodyLower.includes('vacant land')) propertyType = 'plot';\nelse if (bodyLower.includes('house') || bodyLower.includes('home') || bodyLower.includes('dwelling')) propertyType = 'house';\nelse if (bodyLower.includes('farm')) propertyType = 'farm';\n\n// Extract URL from email\nconst urlMatch = body.match(/https?:\\/\\/[^\\s\"<>]+(?:property|listing|realestate|estate)[^\\s\"<>]*/i);\nconst url = urlMatch ? urlMatch[0] : '';\n\nconst listingId = `email_${Buffer.from(email.messageId || Date.now().toString()).toString('base64').substring(0, 20)}`;\n\nreturn [{\n  json: {\n    skip: false,\n    listing_id: listingId,\n    title: subject || 'Email Property Listing',\n    description: body.substring(0, 2000),\n    price: price,\n    price_currency: 'ZAR',\n    bedrooms: bedrooms,\n    bathrooms: bathrooms,\n    size_sqm: size,\n    property_type: propertyType,\n    source: 'email',\n    sender_email: from,\n    url: url,\n    email_date: email.date || new Date().toISOString(),\n    scraped_at: new Date().toISOString(),\n    suburb: '',\n    city: '',\n    province: '',\n    status: 'pending_review',\n    agent_name: '',\n    agent_phone: '',\n    images: []\n  }\n}];"
+      },
+      "id": "code-parse-email",
+      "name": "Parse Email Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "not-skip",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-valid-listing",
+      "name": "Valid Listing?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO properties (listing_id, title, price, price_currency, bedrooms, bathrooms, property_type, suburb, city, province, url, source, description, agent_name, scraped_at, status, size_sqm)\nVALUES (\n  '{{ $json.listing_id }}',\n  '{{ $json.title.replace(/'/g, \"''\") }}',\n  {{ $json.price || 0 }},\n  '{{ $json.price_currency }}',\n  {{ $json.bedrooms }},\n  {{ $json.bathrooms }},\n  '{{ $json.property_type }}',\n  '{{ $json.suburb }}',\n  '{{ $json.city }}',\n  '{{ $json.province }}',\n  '{{ $json.url }}',\n  '{{ $json.source }}',\n  '{{ $json.description.replace(/'/g, \"''\") }}',\n  '{{ $json.sender_email }}',\n  '{{ $json.scraped_at }}',\n  '{{ $json.status }}',\n  {{ $json.size_sqm || 0 }}\n)\nON CONFLICT (listing_id) DO NOTHING\nRETURNING id, listing_id;",
+        "options": {}
+      },
+      "id": "postgres-insert-email",
+      "name": "Store Email Listing",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1120, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "#inbox-listings",
+        "text": "=*New Email Listing Received* :email:\n\n*{{ $json.title }}*\nFrom: {{ $json.sender_email }}\nPrice: {{ $json.price > 0 ? 'R' + $json.price.toLocaleString() : 'Not specified' }}\nType: {{ $json.property_type }}\nBedrooms: {{ $json.bedrooms }} | Bathrooms: {{ $json.bathrooms }}\nStatus: Pending Review\n\nDescription preview: {{ $json.description.substring(0, 200) }}...",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "slack-email-listing",
+      "name": "Notify Team of Email Listing",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [1340, 200],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-puraestate",
+          "name": "PuraEstate Slack"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Read Unread Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Unread Emails": {
+      "main": [
+        [
+          {
+            "node": "Parse Email Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Email Content": {
+      "main": [
+        [
+          {
+            "node": "Valid Listing?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid Listing?": {
+      "main": [
+        [
+          {
+            "node": "Store Email Listing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Store Email Listing": {
+      "main": [
+        [
+          {
+            "node": "Notify Team of Email Listing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["data-collection", "email", "parsing", "puraestate"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}

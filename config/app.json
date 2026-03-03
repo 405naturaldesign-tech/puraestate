@@ -1,0 +1,169 @@
+{
+  "expo": {
+    "name": "PuraEstate",
+    "slug": "pura-estate",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "scheme": "pura",
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTabletMode": true,
+      "bundleIdentifier": "com.pura.estate",
+      "buildNumber": "1",
+      "usesAppleSignIn": true,
+      "usesNonExemptEncryption": false,
+      "infoPlist": {
+        "NSCameraUsageDescription": "PuraEstate needs access to your camera to capture property photos",
+        "NSPhotoLibraryUsageDescription": "PuraEstate needs access to your photo library to upload property images",
+        "NSPhotoLibraryAddOnlyUsageDescription": "PuraEstate needs permission to save photos to your library",
+        "NSLocationWhenInUseUsageDescription": "PuraEstate uses your location to show nearby properties",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "PuraEstate uses your location to show nearby properties",
+        "NSMicrophoneUsageDescription": "PuraEstate needs microphone access for video calls with agents",
+        "NSCalendarsUsageDescription": "PuraEstate can save property viewings to your calendar"
+      },
+      "googleServicesFile": "./GoogleService-Info.plist",
+      "entitlements": {
+        "keychain-access-groups": [
+          "$(AppIdentifierPrefix)com.pura.estate"
+        ]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.pura.estate",
+      "versionCode": 1,
+      "useNextNotificationFormat": true,
+      "googleServicesFile": "./google-services.json",
+      "permissions": [
+        "CAMERA",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "VIBRATE",
+        "RECORD_AUDIO",
+        "MODIFY_AUDIO_SETTINGS",
+        "USE_FULL_SCREEN_INTENT",
+        "SCHEDULE_EXACT_ALARM"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "data": [
+            {
+              "scheme": "https",
+              "host": "*.puraestee.app",
+              "pathPrefix": "/"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro",
+      "output": "server"
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow PuraEstate to access your photos",
+          "cameraPermission": "Allow PuraEstate to use your camera"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow PuraEstate to use your location"
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow PuraEstate to access your media library",
+          "saveToPhotosPermission": "Allow PuraEstate to save photos"
+        }
+      ],
+      [
+        "@stripe/stripe-react-native",
+        {
+          "merchantIdentifier": "com.pura.estate",
+          "enableGooglePay": true
+        }
+      ],
+      [
+        "@react-native-firebase/app",
+        {
+          "android": {
+            "googleServicesFile": "./google-services.json"
+          },
+          "ios": {
+            "googleServicesFile": "./GoogleService-Info.plist"
+          }
+        }
+      ],
+      [
+        "@react-native-async-storage/async-storage",
+        {
+          "storageSize": 5000000
+        }
+      ],
+      "expo-build-properties"
+    ],
+    "notification": {
+      "icon": "./assets/notification-icon.png",
+      "color": "#0A66C2",
+      "priorityAndroidDefault": "max"
+    },
+    "updates": {
+      "enabled": true,
+      "url": "https://u.expo.dev/12345678-1234-1234-1234-123456789012",
+      "fallbackToCacheTimeout": 0,
+      "checkOnBoot": true,
+      "requestHeaders": {
+        "accept-encoding": "gzip, deflate"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "description": "Premium real estate platform for property discovery and management",
+    "githubUrl": "https://github.com/yourusername/pura-estate",
+    "extra": {
+      "eas": {
+        "projectId": "12345678-1234-1234-1234-123456789012"
+      },
+      "apiBaseUrl": "https://api.puraestee.app",
+      "firebaseConfig": {
+        "projectId": "pura-estate-prod",
+        "apiKey": "YOUR_FIREBASE_API_KEY",
+        "authDomain": "pura-estate-prod.firebaseapp.com",
+        "storageUrl": "gs://pura-estate-prod.appspot.com"
+      }
+    }
+  }
+}

@@ -1,0 +1,52 @@
+# =============================================================================
+# PuraEstate – Nginx Reverse Proxy Dockerfile
+# =============================================================================
+# Builds a minimal Nginx image with the custom configuration bundled in.
+# Certbot / Let's Encrypt certificates are mounted at runtime via Docker volume.
+# =============================================================================
+
+FROM nginx:1.27-alpine AS base
+
+LABEL maintainer="PuraEstate <devops@puraestate.com>"
+LABEL org.opencontainers.image.title="PuraEstate Nginx Proxy"
+
+# Install tools needed for health checks and cert management
+RUN apk add --no-cache \
+        curl \
+        openssl \
+        certbot \
+        certbot-nginx \
+        tini
+
+# Remove the default nginx config
+RUN rm -f /etc/nginx/conf.d/default.conf
+
+# Copy our custom nginx configuration files
+COPY nginx/nginx.conf        /etc/nginx/nginx.conf
+COPY nginx/conf.d/           /etc/nginx/conf.d/
+
+# Create directories for SSL certificates and DH params
+RUN mkdir -p \
+        /etc/nginx/ssl \
+        /etc/letsencrypt \
+        /var/www/certbot \
+        /var/cache/nginx \
+        /var/log/nginx
+
+# Generate a self-signed certificate for initial startup
+# (replaced by Let's Encrypt cert on first run of init-ssl.sh)
+RUN openssl req -x509 -nodes -days 1 \
+        -newkey rsa:2048 \
+        -keyout /etc/nginx/ssl/self-signed.key \
+        -out    /etc/nginx/ssl/self-signed.crt \
+        -subj "/C=CR/ST=SanJose/L=SanJose/O=PuraEstate/CN=puraestate.com"
+
+# Expose HTTP and HTTPS
+EXPOSE 80 443
+
+# Health check – nginx should return 200 on the health endpoint
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost/nginx-health || exit 1
+
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["nginx", "-g", "daemon off;"]

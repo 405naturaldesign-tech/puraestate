@@ -1,0 +1,244 @@
+{
+  "name": "PuraEstate - Facebook Marketplace Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-fb-market",
+      "name": "Every 2 Hours Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:5000/api/facebook/marketplace/scrape",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.FLASK_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "search_terms",
+              "value": "={{ JSON.stringify(['property for sale', 'house for sale', 'apartment for sale', 'plot for sale']) }}"
+            },
+            {
+              "name": "locations",
+              "value": "={{ JSON.stringify(['Cape Town', 'Johannesburg', 'Durban', 'Pretoria', 'Port Elizabeth']) }}"
+            },
+            {
+              "name": "max_price",
+              "value": "10000000"
+            },
+            {
+              "name": "category",
+              "value": "propertyrentals"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "http-fb-scrape",
+      "name": "Scrape Facebook Marketplace",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst listings = data.listings || [];\nconst processedAt = new Date().toISOString();\n\nconst parsed = listings.map(listing => {\n  // Extract price from text like \"R 1 250 000\" or \"R1250000\"\n  const priceText = listing.price || '';\n  const priceMatch = priceText.replace(/[\\s,]/g, '').match(/R?([\\d]+)/);\n  const price = priceMatch ? parseFloat(priceMatch[1]) : 0;\n\n  // Extract bedroom count from title/description\n  const bedroomMatch = (listing.title + ' ' + listing.description).match(/(\\d+)\\s*(?:bed|bedroom|br)/i);\n  const bedrooms = bedroomMatch ? parseInt(bedroomMatch[1]) : 0;\n\n  // Extract bathroom count\n  const bathroomMatch = (listing.title + ' ' + listing.description).match(/(\\d+)\\s*(?:bath|bathroom|ba)/i);\n  const bathrooms = bathroomMatch ? parseInt(bathroomMatch[1]) : 0;\n\n  // Determine property type\n  const text = (listing.title + ' ' + listing.description).toLowerCase();\n  let propertyType = 'unknown';\n  if (text.includes('apartment') || text.includes('flat')) propertyType = 'apartment';\n  else if (text.includes('townhouse') || text.includes('town house')) propertyType = 'townhouse';\n  else if (text.includes('plot') || text.includes('land')) propertyType = 'plot';\n  else if (text.includes('house') || text.includes('home')) propertyType = 'house';\n\n  return {\n    listing_id: `fb_market_${listing.marketplace_id || listing.id}`,\n    title: listing.title || 'Facebook Marketplace Property',\n    price: price,\n    price_currency: 'ZAR',\n    bedrooms: bedrooms,\n    bathrooms: bathrooms,\n    property_type: propertyType,\n    suburb: listing.location?.suburb || '',\n    city: listing.location?.city || listing.location || '',\n    province: listing.location?.province || '',\n    url: `https://www.facebook.com/marketplace/item/${listing.marketplace_id}`,\n    source: 'facebook_marketplace',\n    description: listing.description || '',\n    seller_name: listing.seller?.name || '',\n    seller_profile: listing.seller?.profile_url || '',\n    images: listing.images || [],\n    scraped_at: processedAt,\n    raw_price_text: priceText,\n    status: 'active'\n  };\n});\n\n// Filter out listings with no price or clearly not property\nconst valid = parsed.filter(p => p.price > 0 && p.price < 50000000);\n\nreturn valid.map(p => ({ json: p }));"
+      },
+      "id": "code-parse-fb",
+      "name": "Parse Marketplace Listings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT listing_id FROM properties WHERE source = 'facebook_marketplace' AND listing_id = '{{ $json.listing_id }}' LIMIT 1;",
+        "options": {}
+      },
+      "id": "postgres-check-existing",
+      "name": "Check if Already Exists",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [900, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-new",
+              "leftValue": "={{ $json.listing_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "isEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-new-listing",
+      "name": "Is New Listing?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO properties (listing_id, title, price, price_currency, bedrooms, bathrooms, property_type, suburb, city, province, url, source, description, agent_name, agent_phone, images, scraped_at, status)\nVALUES (\n  '{{ $json.listing_id }}',\n  '{{ $json.title.replace(/'/g, \"''\") }}',\n  {{ $json.price }},\n  '{{ $json.price_currency }}',\n  {{ $json.bedrooms }},\n  {{ $json.bathrooms }},\n  '{{ $json.property_type }}',\n  '{{ $json.suburb }}',\n  '{{ $json.city }}',\n  '{{ $json.province }}',\n  '{{ $json.url }}',\n  '{{ $json.source }}',\n  '{{ $json.description.replace(/'/g, \"''\") }}',\n  '{{ $json.seller_name }}',\n  '',\n  '{{ JSON.stringify($json.images) }}',\n  '{{ $json.scraped_at }}',\n  '{{ $json.status }}'\n)\nRETURNING id, listing_id, title, price, created_at;",
+        "options": {}
+      },
+      "id": "postgres-insert-new",
+      "name": "Insert New Listing",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1340, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "#new-listings",
+        "text": "=*New Facebook Marketplace Listing* :facebook:\n\n*{{ $('Parse Marketplace Listings').item.json.title }}*\nPrice: R{{ $('Parse Marketplace Listings').item.json.price.toLocaleString() }}\nType: {{ $('Parse Marketplace Listings').item.json.property_type }}\nLocation: {{ $('Parse Marketplace Listings').item.json.city }}, {{ $('Parse Marketplace Listings').item.json.province }}\nBedrooms: {{ $('Parse Marketplace Listings').item.json.bedrooms }} | Bathrooms: {{ $('Parse Marketplace Listings').item.json.bathrooms }}\nSeller: {{ $('Parse Marketplace Listings').item.json.seller_name }}\n<{{ $('Parse Marketplace Listings').item.json.url }}|View Listing>",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "slack-new-fb",
+      "name": "Notify Slack New Listing",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [1560, 200],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-puraestate",
+          "name": "PuraEstate Slack"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 2 Hours Trigger": {
+      "main": [
+        [
+          {
+            "node": "Scrape Facebook Marketplace",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scrape Facebook Marketplace": {
+      "main": [
+        [
+          {
+            "node": "Parse Marketplace Listings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Marketplace Listings": {
+      "main": [
+        [
+          {
+            "node": "Check if Already Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check if Already Exists": {
+      "main": [
+        [
+          {
+            "node": "Is New Listing?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is New Listing?": {
+      "main": [
+        [
+          {
+            "node": "Insert New Listing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Insert New Listing": {
+      "main": [
+        [
+          {
+            "node": "Notify Slack New Listing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["data-collection", "facebook", "marketplace", "puraestate"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}

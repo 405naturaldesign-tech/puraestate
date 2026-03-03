@@ -1,0 +1,281 @@
+{
+  "name": "PuraEstate - Price Drop Alerts",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-price-drop",
+      "name": "Daily 9AM Check",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  p.id,\n  p.listing_id,\n  p.title,\n  p.price AS current_price,\n  ph.price AS previous_price,\n  p.price_currency,\n  p.bedrooms,\n  p.bathrooms,\n  p.property_type,\n  p.suburb,\n  p.city,\n  p.province,\n  p.url,\n  p.source,\n  ROUND(((ph.price - p.price) / ph.price * 100)::numeric, 2) AS drop_percentage,\n  (ph.price - p.price) AS drop_amount,\n  ph.recorded_at AS previous_price_date\nFROM properties p\nJOIN price_history ph ON ph.property_id = p.id\nWHERE ph.recorded_at = (\n  SELECT MAX(ph2.recorded_at)\n  FROM price_history ph2\n  WHERE ph2.property_id = p.id\n  AND ph2.recorded_at < CURRENT_DATE\n)\nAND p.price < ph.price\nAND ((ph.price - p.price) / ph.price * 100) >= 3\nAND p.status = 'active'\nAND p.updated_at >= CURRENT_DATE - INTERVAL '2 days'\nORDER BY drop_percentage DESC\nLIMIT 50;",
+        "options": {}
+      },
+      "id": "postgres-price-drops",
+      "name": "Query Price Drops",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-drops",
+              "leftValue": "={{ $input.all().length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-drops",
+      "name": "Any Price Drops?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const drops = $input.all();\n\n// Group by province for better messaging\nconst byProvince = {};\ndrops.forEach(item => {\n  const province = item.json.province || 'Unknown';\n  if (!byProvince[province]) byProvince[province] = [];\n  byProvince[province].push(item.json);\n});\n\n// Build Slack message blocks\nconst blocks = [\n  {\n    type: 'header',\n    text: { type: 'plain_text', text: 'Price Drop Alert - ' + new Date().toLocaleDateString('en-ZA') }\n  },\n  {\n    type: 'section',\n    text: { type: 'mrkdwn', text: `*${drops.length} price drops detected today*` }\n  }\n];\n\n// Add top 5 drops\nconst top5 = drops.slice(0, 5).map(d => d.json);\ntop5.forEach(drop => {\n  blocks.push({\n    type: 'section',\n    text: {\n      type: 'mrkdwn',\n      text: `*${drop.title}*\\n` +\n            `~~R${Number(drop.previous_price).toLocaleString()}~~ → *R${Number(drop.current_price).toLocaleString()}* (-${drop.drop_percentage}%)\\n` +\n            `Saving: R${Number(drop.drop_amount).toLocaleString()} | ${drop.city}, ${drop.province}\\n` +\n            `${drop.bedrooms} bed | ${drop.bathrooms} bath | ${drop.property_type}\\n` +\n            `<${drop.url}|View Listing>`\n    }\n  });\n  blocks.push({ type: 'divider' });\n});\n\n// Summary text\nconst totalSavings = drops.reduce((sum, d) => sum + Number(d.json.drop_amount), 0);\nconst avgDrop = drops.reduce((sum, d) => sum + Number(d.json.drop_percentage), 0) / drops.length;\n\nreturn [{\n  json: {\n    drops_count: drops.length,\n    total_savings: totalSavings,\n    avg_drop_pct: avgDrop.toFixed(1),\n    by_province: byProvince,\n    slack_blocks: JSON.stringify(blocks),\n    top_drop: drops[0]?.json || {},\n    all_drops: drops.map(d => d.json)\n  }\n}];"
+      },
+      "id": "code-build-message",
+      "name": "Build Alert Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 200]
+    },
+    {
+      "parameters": {
+        "channel": "#price-drops",
+        "blocksUi": "={{ $json.slack_blocks }}",
+        "text": "Price drops alert",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "slack-price-drop",
+      "name": "Send Slack Price Drop Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [1120, 100],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-puraestate",
+          "name": "PuraEstate Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  ss.id AS search_id,\n  ss.user_email,\n  ss.user_name,\n  ss.user_phone,\n  ss.max_price,\n  ss.min_bedrooms,\n  ss.province_filter,\n  ss.property_type_filter,\n  ss.notify_whatsapp,\n  ss.notify_email\nFROM saved_searches ss\nWHERE ss.active = true\nAND ss.notify_price_drops = true;",
+        "options": {}
+      },
+      "id": "postgres-get-subscribers",
+      "name": "Get Alert Subscribers",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1120, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const subscriber = $('Get Alert Subscribers').item.json;\nconst allDrops = $('Build Alert Messages').item.json.all_drops;\n\n// Filter drops matching subscriber's saved search criteria\nconst matchingDrops = allDrops.filter(drop => {\n  if (subscriber.max_price && drop.current_price > subscriber.max_price) return false;\n  if (subscriber.min_bedrooms && drop.bedrooms < subscriber.min_bedrooms) return false;\n  if (subscriber.province_filter && subscriber.province_filter !== 'all' && drop.province !== subscriber.province_filter) return false;\n  if (subscriber.property_type_filter && subscriber.property_type_filter !== 'all' && drop.property_type !== subscriber.property_type_filter) return false;\n  return true;\n});\n\nif (matchingDrops.length === 0) return [];\n\nconst emailHtml = `\n<!DOCTYPE html>\n<html>\n<head><style>\nbody { font-family: Arial, sans-serif; color: #333; }\n.header { background: #1a472a; color: white; padding: 20px; text-align: center; }\n.property { border: 1px solid #ddd; margin: 15px 0; padding: 15px; border-radius: 8px; }\n.price-drop { color: #e53e3e; font-size: 18px; font-weight: bold; }\n.old-price { text-decoration: line-through; color: #999; }\n.new-price { color: #2d6a4f; font-size: 22px; font-weight: bold; }\n.badge { background: #e53e3e; color: white; padding: 3px 8px; border-radius: 12px; font-size: 12px; }\n.cta { background: #1a472a; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 10px; }\n</style></head>\n<body>\n<div class=\"header\">\n  <h1>Price Drop Alert</h1>\n  <p>${matchingDrops.length} price drop(s) matching your saved search</p>\n</div>\n<div style=\"padding: 20px;\">\n${matchingDrops.slice(0, 5).map(drop => `\n  <div class=\"property\">\n    <h3>${drop.title}</h3>\n    <p>\n      <span class=\"old-price\">R${Number(drop.previous_price).toLocaleString()}</span>\n      &nbsp;→&nbsp;\n      <span class=\"new-price\">R${Number(drop.current_price).toLocaleString()}</span>\n      &nbsp;<span class=\"badge\">-${drop.drop_percentage}%</span>\n    </p>\n    <p>You save: <strong>R${Number(drop.drop_amount).toLocaleString()}</strong></p>\n    <p>${drop.bedrooms} bed | ${drop.bathrooms} bath | ${drop.property_type}<br>${drop.city}, ${drop.province}</p>\n    <a href=\"${drop.url}\" class=\"cta\">View Property</a>\n  </div>\n`).join('')}\n</div>\n<p style=\"text-align:center;color:#999;font-size:12px;\">PuraEstate - Unsubscribe</p>\n</body></html>`;\n\nreturn [{\n  json: {\n    to: subscriber.user_email,\n    name: subscriber.user_name,\n    phone: subscriber.user_phone,\n    notify_whatsapp: subscriber.notify_whatsapp,\n    notify_email: subscriber.notify_email,\n    matching_drops: matchingDrops.length,\n    email_html: emailHtml,\n    whatsapp_message: `PuraEstate Price Alert: ${matchingDrops.length} properties matching your search have dropped in price! Top drop: ${matchingDrops[0].title} now R${Number(matchingDrops[0].current_price).toLocaleString()} (-${matchingDrops[0].drop_percentage}%). View: ${matchingDrops[0].url}`\n  }\n}];"
+      },
+      "id": "code-personalize",
+      "name": "Personalize for Subscriber",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.to }}",
+        "subject": "Price Drop Alert - {{ $json.matching_drops }} property price drop(s) matching your search",
+        "emailFormat": "html",
+        "message": "={{ $json.email_html }}",
+        "options": {
+          "allowUnauthorizedCerts": false
+        }
+      },
+      "id": "email-send-alert",
+      "name": "Send Email Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1560, 200],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-puraestate",
+          "name": "PuraEstate SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://api.whatsapp.com/send",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.WHATSAPP_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "messaging_product",
+              "value": "whatsapp"
+            },
+            {
+              "name": "to",
+              "value": "={{ $json.phone }}"
+            },
+            {
+              "name": "type",
+              "value": "text"
+            },
+            {
+              "name": "text",
+              "value": "={{ JSON.stringify({ body: $json.whatsapp_message }) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-whatsapp",
+      "name": "Send WhatsApp Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1560, 400]
+    }
+  ],
+  "connections": {
+    "Daily 9AM Check": {
+      "main": [
+        [
+          {
+            "node": "Query Price Drops",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Price Drops": {
+      "main": [
+        [
+          {
+            "node": "Any Price Drops?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Price Drops?": {
+      "main": [
+        [
+          {
+            "node": "Build Alert Messages",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Build Alert Messages": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Price Drop Alert",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Alert Subscribers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Alert Subscribers": {
+      "main": [
+        [
+          {
+            "node": "Personalize for Subscriber",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Personalize for Subscriber": {
+      "main": [
+        [
+          {
+            "node": "Send Email Alert",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send WhatsApp Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["alerts", "price-drops", "notifications", "puraestate"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}

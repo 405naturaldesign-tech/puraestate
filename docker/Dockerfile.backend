@@ -1,0 +1,117 @@
+# =============================================================================
+# PuraEstate – Flask Backend Dockerfile (Production Multi-Stage)
+# =============================================================================
+# Stage 1: build – compile Python dependencies (with build tools)
+# Stage 2: runtime – minimal image with only what's needed to run
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Stage 1: Builder
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS builder
+
+# Install OS build dependencies (needed to compile C extensions)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        libpq-dev \
+        libssl-dev \
+        libffi-dev \
+        gcc \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a virtual environment so we can copy it cleanly into the runtime image
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Upgrade pip / setuptools / wheel first
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Copy only the requirements file to leverage Docker layer caching
+COPY requirements_backend.txt /tmp/requirements.txt
+
+# Install all Python dependencies into the venv
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Install Gunicorn (WSGI server) and gevent worker
+RUN pip install --no-cache-dir gunicorn==22.0.0 gevent==24.2.1
+
+# ---------------------------------------------------------------------------
+# Stage 2: Runtime
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS runtime
+
+LABEL maintainer="PuraEstate <devops@puraestate.com>"
+LABEL org.opencontainers.image.title="PuraEstate Flask API"
+LABEL org.opencontainers.image.description="Production Flask backend for PuraEstate SaaS"
+LABEL org.opencontainers.image.version="1.0.0"
+
+# Install only runtime OS dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpq5 \
+        curl \
+        ca-certificates \
+        tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the pre-built virtual environment from builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Create a non-root user for running the application
+RUN groupadd --gid 1001 appgroup && \
+    useradd --uid 1001 --gid appgroup --shell /bin/bash --create-home appuser
+
+# Set working directory
+WORKDIR /app
+
+# Copy application source code
+COPY --chown=appuser:appgroup . .
+
+# Create necessary directories
+RUN mkdir -p /app/logs /tmp/uploads && \
+    chown -R appuser:appgroup /app /tmp/uploads
+
+# Switch to non-root user
+USER appuser
+
+# Environment defaults (overridden at runtime via docker-compose / .env)
+ENV FLASK_ENV=production \
+    FLASK_APP=wsgi:app \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONFAULTHANDLER=1 \
+    PORT=5000 \
+    WORKERS=4 \
+    WORKER_CLASS=gevent \
+    WORKER_CONNECTIONS=1000 \
+    TIMEOUT=120 \
+    KEEPALIVE=5 \
+    MAX_REQUESTS=1000 \
+    MAX_REQUESTS_JITTER=100
+
+# Expose Flask port
+EXPOSE 5000
+
+# Health check – uses the /health endpoint registered in app.py
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
+
+# Use tini as PID 1 to properly handle signals
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+# Start Gunicorn with gevent workers
+CMD ["sh", "-c", "gunicorn wsgi:application \
+    --bind 0.0.0.0:${PORT} \
+    --workers ${WORKERS} \
+    --worker-class ${WORKER_CLASS} \
+    --worker-connections ${WORKER_CONNECTIONS} \
+    --timeout ${TIMEOUT} \
+    --keep-alive ${KEEPALIVE} \
+    --max-requests ${MAX_REQUESTS} \
+    --max-requests-jitter ${MAX_REQUESTS_JITTER} \
+    --access-logfile - \
+    --error-logfile - \
+    --log-level info \
+    --forwarded-allow-ips='*' \
+    --proxy-protocol"]

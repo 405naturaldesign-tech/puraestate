@@ -1,0 +1,170 @@
+{
+  "name": "PuraEstate - Follow-up Reminders",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "cron-followup",
+      "name": "Weekdays 8AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  l.id AS lead_id,\n  l.first_name,\n  l.last_name,\n  l.email AS lead_email,\n  l.phone AS lead_phone,\n  l.lead_score,\n  l.lead_tier,\n  l.budget,\n  l.province,\n  l.timeline,\n  l.status AS lead_status,\n  l.submitted_at,\n  l.last_contact_at,\n  l.property_title AS interested_property,\n  l.property_url AS interested_property_url,\n  a.name AS agent_name,\n  a.email AS agent_email,\n  a.phone AS agent_phone,\n  fr.id AS reminder_id,\n  fr.reminder_type,\n  fr.due_date,\n  fr.note AS reminder_note,\n  EXTRACT(DAYS FROM NOW() - l.last_contact_at) AS days_since_contact,\n  EXTRACT(DAYS FROM NOW() - l.submitted_at) AS days_since_submission\nFROM leads l\nJOIN agents a ON a.id = l.agent_id\nLEFT JOIN follow_up_reminders fr ON fr.lead_id = l.id \n  AND fr.completed = false \n  AND fr.due_date <= CURRENT_DATE + INTERVAL '1 day'\nWHERE l.status NOT IN ('converted', 'lost', 'unsubscribed')\nAND (\n  -- Scheduled reminder due\n  fr.id IS NOT NULL\n  OR\n  -- Hot lead with no contact in 1 day\n  (l.lead_tier = 'hot' AND l.last_contact_at < NOW() - INTERVAL '1 day')\n  OR\n  -- Warm lead with no contact in 3 days  \n  (l.lead_tier = 'warm' AND l.last_contact_at < NOW() - INTERVAL '3 days')\n  OR\n  -- Cold lead with no contact in 7 days\n  (l.lead_tier = 'cold' AND l.last_contact_at < NOW() - INTERVAL '7 days')\n  OR\n  -- New lead (within 24h) with no contact yet\n  (l.submitted_at >= NOW() - INTERVAL '24 hours' AND l.last_contact_at IS NULL)\n)\nORDER BY \n  CASE l.lead_tier WHEN 'hot' THEN 1 WHEN 'warm' THEN 2 ELSE 3 END,\n  fr.due_date ASC NULLS LAST,\n  l.last_contact_at ASC;",
+        "options": {}
+      },
+      "id": "postgres-get-followups",
+      "name": "Get Follow-ups Due Today",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const leads = $input.all().map(i => i.json);\n\n// Group by agent\nconst byAgent = {};\nleads.forEach(lead => {\n  const agentEmail = lead.agent_email;\n  if (!byAgent[agentEmail]) {\n    byAgent[agentEmail] = {\n      agent_name: lead.agent_name,\n      agent_email: lead.agent_email,\n      agent_phone: lead.agent_phone,\n      leads: []\n    };\n  }\n  byAgent[agentEmail].leads.push(lead);\n});\n\n// Create one reminder digest per agent\nconst result = Object.values(byAgent).map(agent => {\n  const hotLeads = agent.leads.filter(l => l.lead_tier === 'hot');\n  const warmLeads = agent.leads.filter(l => l.lead_tier === 'warm');\n  const coldLeads = agent.leads.filter(l => l.lead_tier === 'cold');\n\n  const fmt = (n) => 'R ' + Number(n).toLocaleString('en-ZA', { maximumFractionDigits: 0 });\n\n  const emailHtml = `\n<!DOCTYPE html>\n<html>\n<head><style>\nbody{font-family:Arial,sans-serif;color:#333;margin:0;background:#f4f4f4;}\n.container{max-width:650px;margin:0 auto;background:white;}\n.header{background:#1a472a;color:white;padding:25px;text-align:center;}\n.section{padding:20px 25px;border-bottom:1px solid #eee;}\n.section h3{margin:0 0 15px;color:#1a472a;font-size:15px;text-transform:uppercase;}\n.lead-row{border:1px solid #e8e8e8;border-radius:8px;padding:14px;margin:8px 0;}\n.hot{border-left:4px solid #e53e3e;}\n.warm{border-left:4px solid #ed8936;}\n.cold{border-left:4px solid #4299e1;}\n.lead-name{font-weight:bold;font-size:15px;}\n.lead-meta{color:#666;font-size:13px;margin:4px 0;}\n.badge{padding:2px 8px;border-radius:10px;font-size:11px;font-weight:bold;}\n.hot-badge{background:#fed7d7;color:#c53030;}\n.warm-badge{background:#feebc8;color:#c05621;}\n.cold-badge{background:#bee3f8;color:#2a69ac;}\n.contact-btn{background:#1a472a;color:white;padding:8px 16px;text-decoration:none;border-radius:4px;font-size:13px;display:inline-block;margin:5px 5px 0 0;}\nfooter{background:#1a472a;color:rgba(255,255,255,0.7);padding:15px;text-align:center;font-size:12px;}\n</style></head>\n<body><div class=\"container\">\n<div class=\"header\">\n  <h2>Follow-up Reminders</h2>\n  <p style=\"opacity:0.8;margin:5px 0 0;\">${new Date().toLocaleDateString('en-ZA', { weekday: 'long', day: 'numeric', month: 'long' })}</p>\n  <p style=\"opacity:0.9;margin:5px 0 0;font-size:18px;\">Hi ${agent.agent_name} - You have ${agent.leads.length} follow-up${agent.leads.length > 1 ? 's' : ''} today</p>\n</div>\n\n${hotLeads.length > 0 ? `\n<div class=\"section\">\n  <h3>HOT Leads (${hotLeads.length}) - Contact Today!</h3>\n  ${hotLeads.map(l => `\n  <div class=\"lead-row hot\">\n    <div class=\"lead-name\">${l.first_name} ${l.last_name} <span class=\"badge hot-badge\">HOT ${l.lead_score}/100</span></div>\n    <div class=\"lead-meta\">${l.lead_email} | ${l.lead_phone || 'No phone'}</div>\n    <div class=\"lead-meta\">Budget: ${l.budget > 0 ? fmt(l.budget) : 'Not specified'} | Timeline: ${l.timeline} | ${l.province}</div>\n    <div class=\"lead-meta\">${l.days_since_contact ? `Last contact: ${Math.round(l.days_since_contact)} days ago` : 'No contact yet'}</div>\n    ${l.interested_property ? `<div class=\"lead-meta\">Interested in: <a href=\"${l.interested_property_url}\">${l.interested_property}</a></div>` : ''}\n    ${l.reminder_note ? `<div class=\"lead-meta\"><em>Note: ${l.reminder_note}</em></div>` : ''}\n    <a href=\"mailto:${l.lead_email}\" class=\"contact-btn\">Send Email</a>\n    ${l.lead_phone ? `<a href=\"tel:${l.lead_phone}\" class=\"contact-btn\" style=\"background:#2d6a4f;\">Call</a>` : ''}\n    <a href=\"https://puraestate.co.za/admin/leads/${l.lead_id}\" class=\"contact-btn\" style=\"background:#666;\">View Profile</a>\n  </div>`).join('')}\n</div>` : ''}\n\n${warmLeads.length > 0 ? `\n<div class=\"section\">\n  <h3>Warm Leads (${warmLeads.length})</h3>\n  ${warmLeads.map(l => `\n  <div class=\"lead-row warm\">\n    <div class=\"lead-name\">${l.first_name} ${l.last_name} <span class=\"badge warm-badge\">WARM ${l.lead_score}/100</span></div>\n    <div class=\"lead-meta\">${l.lead_email} | ${l.lead_phone || 'No phone'}</div>\n    <div class=\"lead-meta\">Budget: ${l.budget > 0 ? fmt(l.budget) : 'Not specified'} | ${l.province}</div>\n    <div class=\"lead-meta\">${l.days_since_contact ? `Last contact: ${Math.round(l.days_since_contact)} days ago` : 'No contact yet'}</div>\n    <a href=\"mailto:${l.lead_email}\" class=\"contact-btn\">Send Email</a>\n    <a href=\"https://puraestate.co.za/admin/leads/${l.lead_id}\" class=\"contact-btn\" style=\"background:#666;\">View Profile</a>\n  </div>`).join('')}\n</div>` : ''}\n\n${coldLeads.length > 0 ? `\n<div class=\"section\">\n  <h3>Cold Leads (${coldLeads.length})</h3>\n  ${coldLeads.map(l => `\n  <div class=\"lead-row cold\">\n    <div class=\"lead-name\">${l.first_name} ${l.last_name} <span class=\"badge cold-badge\">COLD ${l.lead_score}/100</span></div>\n    <div class=\"lead-meta\">${l.lead_email} | ${l.province}</div>\n    <div class=\"lead-meta\">${l.days_since_contact ? `Last contact: ${Math.round(l.days_since_contact)} days ago` : 'No contact yet'}</div>\n    <a href=\"mailto:${l.lead_email}\" class=\"contact-btn\">Send Email</a>\n    <a href=\"https://puraestate.co.za/admin/leads/${l.lead_id}\" class=\"contact-btn\" style=\"background:#666;\">View Profile</a>\n  </div>`).join('')}\n</div>` : ''}\n\n<footer>PuraEstate CRM | <a href=\"https://puraestate.co.za/admin/leads\" style=\"color:#95d5b2;\">Open CRM Dashboard</a></footer>\n</div></body></html>`;\n\n  const slackMessage = [\n    `*Follow-up Reminder: ${agent.agent_name}*`,\n    `You have ${agent.leads.length} leads to follow up today:`,\n    hotLeads.length > 0 ? `:fire: ${hotLeads.length} HOT leads - contact today!` : '',\n    warmLeads.length > 0 ? `:orange_circle: ${warmLeads.length} warm leads` : '',\n    coldLeads.length > 0 ? `:blue_circle: ${coldLeads.length} cold leads` : '',\n    `<https://puraestate.co.za/admin/leads|Open CRM Dashboard>`\n  ].filter(Boolean).join('\\n');\n\n  return {\n    json: {\n      agent_name: agent.agent_name,\n      agent_email: agent.agent_email,\n      total_followups: agent.leads.length,\n      hot_count: hotLeads.length,\n      warm_count: warmLeads.length,\n      cold_count: coldLeads.length,\n      email_html: emailHtml,\n      slack_message: slackMessage,\n      subject: `Follow-up Reminders: ${agent.leads.length} leads need attention today`\n    }\n  };\n});\n\nreturn result;"
+      },
+      "id": "code-build-reminders",
+      "name": "Build Agent Reminders",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.agent_email }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "html",
+        "message": "={{ $json.email_html }}",
+        "options": {}
+      },
+      "id": "email-agent-reminder",
+      "name": "Email Follow-up Digest to Agent",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [900, 200],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-puraestate",
+          "name": "PuraEstate SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "#follow-ups",
+        "text": "={{ $json.slack_message }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "slack-reminder",
+      "name": "Post Reminder to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [900, 400],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-puraestate",
+          "name": "PuraEstate Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Mark scheduled reminders as sent\nUPDATE follow_up_reminders\nSET notified_at = NOW()\nWHERE lead_id IN (\n  SELECT id FROM leads\n  WHERE status NOT IN ('converted', 'lost', 'unsubscribed')\n)\nAND completed = false\nAND due_date <= CURRENT_DATE + INTERVAL '1 day'\nAND notified_at IS NULL;",
+        "options": {}
+      },
+      "id": "postgres-mark-reminded",
+      "name": "Mark Reminders as Sent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1120, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Weekdays 8AM": {
+      "main": [
+        [
+          {
+            "node": "Get Follow-ups Due Today",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Follow-ups Due Today": {
+      "main": [
+        [
+          {
+            "node": "Build Agent Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Agent Reminders": {
+      "main": [
+        [
+          {
+            "node": "Email Follow-up Digest to Agent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Post Reminder to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Follow-up Digest to Agent": {
+      "main": [
+        [
+          {
+            "node": "Mark Reminders as Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["lead-management", "follow-up", "reminders", "puraestate"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}

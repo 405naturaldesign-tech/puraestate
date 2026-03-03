@@ -1,0 +1,476 @@
+# =============================================================================
+# PuraEstate SaaS Platform – Docker Compose Production Stack
+# =============================================================================
+# Services:
+#   postgres    – PostgreSQL 16 database
+#   redis       – Redis 7 cache / message broker
+#   flask       – Flask REST API (Gunicorn + Gevent)
+#   frontend    – Next.js 14 frontend
+#   nginx       – Nginx reverse proxy (SSL termination)
+#   celery      – Celery async worker
+#   flower      – Celery task monitoring (optional, internal)
+#   n8n         – Workflow automation (optional)
+#
+# Usage:
+#   cp .env.production .env
+#   docker compose up -d
+#   docker compose logs -f
+# =============================================================================
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "50m"
+    max-file: "5"
+    labels: "service"
+
+x-restart-policy: &restart-policy
+  restart: unless-stopped
+
+x-flask-env: &flask-env
+  FLASK_ENV: production
+  DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+  SECRET_KEY: ${SECRET_KEY}
+  JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+  CORS_ORIGINS: https://puraestate.com,https://www.puraestate.com
+  # Email
+  MAIL_SERVER: ${MAIL_SERVER}
+  MAIL_PORT: ${MAIL_PORT:-587}
+  MAIL_USE_TLS: "true"
+  MAIL_USERNAME: ${MAIL_USERNAME}
+  MAIL_PASSWORD: ${MAIL_PASSWORD}
+  MAIL_DEFAULT_SENDER: ${MAIL_DEFAULT_SENDER:-noreply@puraestate.com}
+  # AWS S3
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+  AWS_S3_BUCKET: ${AWS_S3_BUCKET}
+  AWS_REGION: ${AWS_REGION:-us-east-1}
+  # Stripe
+  STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+  STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY}
+  # SendGrid
+  SENDGRID_API_KEY: ${SENDGRID_API_KEY}
+  # Google Maps
+  GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY}
+  # Logging
+  LOG_LEVEL: WARNING
+  # JWT token lifetimes
+  JWT_ACCESS_EXPIRES_MINUTES: ${JWT_ACCESS_EXPIRES_MINUTES:-60}
+  JWT_REFRESH_EXPIRES_DAYS: ${JWT_REFRESH_EXPIRES_DAYS:-30}
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: puraestate-postgres
+    <<: *restart-policy
+    logging: *default-logging
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-puraestate_prod}
+      POSTGRES_USER: ${POSTGRES_USER:-puraestate}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=en_US.utf8 --lc-ctype=en_US.utf8"
+      # Enable pg_stat_statements for query monitoring
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-puraestate} -d ${POSTGRES_DB:-puraestate_prod}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # Security: do not expose PostgreSQL port to the host
+    # Access via: docker compose exec postgres psql -U puraestate puraestate_prod
+    shm_size: 256mb
+    command: >
+      postgres
+        -c shared_buffers=256MB
+        -c effective_cache_size=768MB
+        -c maintenance_work_mem=64MB
+        -c checkpoint_completion_target=0.9
+        -c wal_buffers=16MB
+        -c default_statistics_target=100
+        -c random_page_cost=1.1
+        -c effective_io_concurrency=200
+        -c work_mem=4MB
+        -c min_wal_size=1GB
+        -c max_wal_size=4GB
+        -c max_worker_processes=4
+        -c max_parallel_workers_per_gather=2
+        -c max_parallel_workers=4
+        -c max_parallel_maintenance_workers=2
+        -c log_min_duration_statement=1000
+        -c log_connections=on
+        -c log_disconnections=on
+        -c log_line_prefix='%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h '
+
+  # ---------------------------------------------------------------------------
+  # Redis 7
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: puraestate-redis
+    <<: *restart-policy
+    logging: *default-logging
+    command: >
+      redis-server
+        --requirepass ${REDIS_PASSWORD}
+        --maxmemory 512mb
+        --maxmemory-policy allkeys-lru
+        --save 900 1
+        --save 300 10
+        --save 60 10000
+        --appendonly yes
+        --appendfsync everysec
+        --no-appendfsync-on-rewrite no
+        --auto-aof-rewrite-percentage 100
+        --auto-aof-rewrite-min-size 64mb
+        --loglevel notice
+        --bind 0.0.0.0
+        --protected-mode yes
+        --tcp-keepalive 300
+        --timeout 300
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # Flask API
+  # ---------------------------------------------------------------------------
+  flask:
+    build:
+      context: ../backend
+      dockerfile: ../deploy/Dockerfile.backend
+      cache_from:
+        - puraestate/flask-api:latest
+    image: puraestate/flask-api:${APP_VERSION:-latest}
+    container_name: puraestate-flask
+    <<: *restart-policy
+    logging: *default-logging
+    environment:
+      <<: *flask-env
+      PORT: 5000
+      WORKERS: ${FLASK_WORKERS:-4}
+      WORKER_CLASS: gevent
+      WORKER_CONNECTIONS: 1000
+      TIMEOUT: 120
+      MAX_REQUESTS: 1000
+      MAX_REQUESTS_JITTER: 100
+    volumes:
+      - uploads_data:/tmp/uploads
+      - flask_logs:/app/logs
+    networks:
+      - backend
+      - frontend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    # Do NOT expose the Flask port externally – nginx proxies to it
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+
+  # ---------------------------------------------------------------------------
+  # Next.js Frontend
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: ../deploy/Dockerfile.frontend
+      cache_from:
+        - puraestate/frontend:latest
+      args:
+        NEXT_PUBLIC_API_URL: https://puraestate.com
+        NEXT_PUBLIC_WS_URL: wss://puraestate.com
+        NEXT_PUBLIC_SITE_URL: https://puraestate.com
+        NEXT_PUBLIC_MAPBOX_TOKEN: ${NEXT_PUBLIC_MAPBOX_TOKEN:-}
+        NEXT_PUBLIC_GOOGLE_MAPS_KEY: ${GOOGLE_MAPS_API_KEY:-}
+    image: puraestate/frontend:${APP_VERSION:-latest}
+    container_name: puraestate-frontend
+    <<: *restart-policy
+    logging: *default-logging
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      PORT: 3000
+    networks:
+      - frontend
+    depends_on:
+      flask:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.5"
+        reservations:
+          memory: 128m
+          cpus: "0.1"
+
+  # ---------------------------------------------------------------------------
+  # Nginx Reverse Proxy
+  # ---------------------------------------------------------------------------
+  nginx:
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+    image: puraestate/nginx:${APP_VERSION:-latest}
+    container_name: puraestate-nginx
+    <<: *restart-policy
+    logging: *default-logging
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Live nginx config (hot-reloadable without rebuild)
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      # Let's Encrypt certificates (managed by certbot on host or via init-ssl.sh)
+      - letsencrypt_data:/etc/letsencrypt:ro
+      - certbot_webroot:/var/www/certbot:ro
+      # DH params
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      # Nginx logs
+      - nginx_logs:/var/log/nginx
+    networks:
+      - frontend
+    depends_on:
+      - flask
+      - frontend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/nginx-health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.5"
+
+  # ---------------------------------------------------------------------------
+  # Celery Worker
+  # ---------------------------------------------------------------------------
+  celery:
+    build:
+      context: ../backend
+      dockerfile: ../deploy/Dockerfile.celery
+      cache_from:
+        - puraestate/celery-worker:latest
+    image: puraestate/celery-worker:${APP_VERSION:-latest}
+    container_name: puraestate-celery
+    <<: *restart-policy
+    logging: *default-logging
+    environment:
+      <<: *flask-env
+      CELERY_APP: celery_worker:celery_app
+      CELERY_CONCURRENCY: ${CELERY_CONCURRENCY:-4}
+      CELERY_LOGLEVEL: info
+      CELERY_QUEUES: default,emails,reports,notifications
+    volumes:
+      - uploads_data:/tmp/uploads
+      - flask_logs:/app/logs
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A ${CELERY_APP:-celery_worker:celery_app} inspect ping -d celery@$$HOSTNAME || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+          cpus: "1.0"
+        reservations:
+          memory: 128m
+          cpus: "0.25"
+
+  # ---------------------------------------------------------------------------
+  # Flower – Celery Monitoring (Optional)
+  # ---------------------------------------------------------------------------
+  flower:
+    build:
+      context: ../backend
+      dockerfile: ../deploy/Dockerfile.celery
+    image: puraestate/celery-worker:${APP_VERSION:-latest}
+    container_name: puraestate-flower
+    <<: *restart-policy
+    logging: *default-logging
+    command: >
+      sh -c "celery -A ${CELERY_APP:-celery_worker:celery_app} flower
+        --port=5555
+        --url-prefix=flower
+        --basic-auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD}
+        --persistent=True
+        --db=/app/logs/flower.db
+        --max-tasks=10000"
+    environment:
+      <<: *flask-env
+      CELERY_APP: celery_worker:celery_app
+      FLOWER_USER: ${FLOWER_USER:-admin}
+      FLOWER_PASSWORD: ${FLOWER_PASSWORD}
+    volumes:
+      - flask_logs:/app/logs
+    networks:
+      - backend
+    ports:
+      # Only expose on localhost – access via SSH tunnel
+      - "127.0.0.1:5556:5555"
+    depends_on:
+      - redis
+      - celery
+    profiles:
+      - monitoring
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  # ---------------------------------------------------------------------------
+  # n8n – Workflow Automation (Optional)
+  # ---------------------------------------------------------------------------
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: puraestate-n8n
+    <<: *restart-policy
+    logging: *default-logging
+    environment:
+      N8N_HOST: n8n.puraestate.com
+      N8N_PORT: 5678
+      N8N_PROTOCOL: https
+      NODE_ENV: production
+      WEBHOOK_URL: https://n8n.puraestate.com
+      GENERIC_TIMEZONE: America/Costa_Rica
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${N8N_POSTGRES_DB:-puraestate_n8n}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_USER:-admin}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD}
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: 336
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - backend
+      - frontend
+    ports:
+      # Only expose on localhost – reverse-proxy through nginx in production
+      - "127.0.0.1:5678:5678"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - automation
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  # backend – internal network (postgres, redis, flask, celery)
+  backend:
+    driver: bridge
+    name: puraestate-backend
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+  # frontend – DMZ network (nginx ↔ flask, nginx ↔ nextjs)
+  frontend:
+    driver: bridge
+    name: puraestate-frontend
+    ipam:
+      config:
+        - subnet: 172.21.0.0/24
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres_data:
+    name: puraestate-postgres-data
+    driver: local
+
+  redis_data:
+    name: puraestate-redis-data
+    driver: local
+
+  uploads_data:
+    name: puraestate-uploads
+    driver: local
+
+  flask_logs:
+    name: puraestate-flask-logs
+    driver: local
+
+  nginx_logs:
+    name: puraestate-nginx-logs
+    driver: local
+
+  letsencrypt_data:
+    name: puraestate-letsencrypt
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /etc/letsencrypt
+
+  certbot_webroot:
+    name: puraestate-certbot-webroot
+    driver: local
+
+  n8n_data:
+    name: puraestate-n8n-data
+    driver: local

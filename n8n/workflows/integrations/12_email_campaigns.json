@@ -1,0 +1,181 @@
+{
+  "name": "PuraEstate - Email Campaigns (Weekly Digest)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 10 * * 3"
+            }
+          ]
+        }
+      },
+      "id": "cron-campaign",
+      "name": "Wednesday 10AM Campaign",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  s.id,\n  s.email,\n  s.first_name,\n  s.last_name,\n  s.province_preference,\n  s.max_budget,\n  s.min_bedrooms,\n  s.property_type_preference,\n  s.subscribed_at\nFROM email_subscribers s\nWHERE s.active = true\nAND s.unsubscribed_at IS NULL\nAND (s.last_email_sent IS NULL OR s.last_email_sent < NOW() - INTERVAL '6 days')\nORDER BY s.subscribed_at DESC\nLIMIT 500;",
+        "options": {}
+      },
+      "id": "postgres-get-subscribers",
+      "name": "Get Active Subscribers",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  p.listing_id,\n  p.title,\n  p.price,\n  p.bedrooms,\n  p.bathrooms,\n  p.property_type,\n  p.suburb,\n  p.city,\n  p.province,\n  p.size_sqm,\n  p.url,\n  p.source,\n  p.images\nFROM properties p\nWHERE p.status = 'active'\nAND p.price > 0\nAND p.created_at >= NOW() - INTERVAL '7 days'\nORDER BY p.created_at DESC\nLIMIT 200;",
+        "options": {}
+      },
+      "id": "postgres-new-listings",
+      "name": "Get This Week's New Listings",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [460, 500],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const subscriber = $('Get Active Subscribers').item.json;\nconst allListings = $('Get This Week\\'s New Listings').all().map(i => i.json);\n\n// Filter listings based on subscriber preferences\nlet personalizedListings = allListings.filter(listing => {\n  if (subscriber.province_preference && subscriber.province_preference !== 'all') {\n    if (listing.province !== subscriber.province_preference) return false;\n  }\n  if (subscriber.max_budget && listing.price > subscriber.max_budget) return false;\n  if (subscriber.min_bedrooms && listing.bedrooms < subscriber.min_bedrooms) return false;\n  if (subscriber.property_type_preference && subscriber.property_type_preference !== 'all') {\n    if (listing.property_type !== subscriber.property_type_preference) return false;\n  }\n  return true;\n});\n\n// If too few matches, show general listings\nif (personalizedListings.length < 3) {\n  personalizedListings = allListings.slice(0, 6);\n}\n\n// Limit to 6 featured listings\nconst featured = personalizedListings.slice(0, 6);\n\nif (featured.length === 0) return [];\n\nconst firstName = subscriber.first_name || 'Property Seeker';\nconst weekOf = new Date().toLocaleDateString('en-ZA', { day: 'numeric', month: 'long', year: 'numeric' });\n\nconst unsubUrl = `https://puraestate.co.za/unsubscribe?email=${encodeURIComponent(subscriber.email)}&token=TOKEN_PLACEHOLDER`;\n\nconst emailHtml = `\n<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n<title>PuraEstate Weekly Digest</title>\n<style>\n* { box-sizing: border-box; margin: 0; padding: 0; }\nbody { background: #f4f4f4; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }\n.wrapper { max-width: 680px; margin: 0 auto; }\n.header { background: linear-gradient(135deg, #1a472a, #2d6a4f); padding: 40px 30px; text-align: center; }\n.logo { color: white; font-size: 28px; font-weight: 900; letter-spacing: 2px; }\n.logo span { color: #95d5b2; }\n.header-subtitle { color: rgba(255,255,255,0.8); margin-top: 8px; font-size: 14px; }\n.hero { background: white; padding: 30px; text-align: center; border-bottom: 3px solid #e8f5e9; }\n.hero h2 { color: #1a472a; font-size: 22px; }\n.hero p { color: #666; margin-top: 8px; }\n.listings-grid { background: #f9f9f9; padding: 20px; }\n.listing-card { background: white; border-radius: 10px; margin: 12px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }\n.listing-body { padding: 18px; }\n.listing-title { font-size: 16px; font-weight: bold; color: #1a472a; margin-bottom: 6px; }\n.listing-price { font-size: 22px; font-weight: 900; color: #2d6a4f; margin: 8px 0; }\n.listing-meta { color: #777; font-size: 13px; display: flex; gap: 12px; flex-wrap: wrap; margin: 8px 0; }\n.meta-tag { background: #e8f5e9; color: #1a472a; padding: 3px 10px; border-radius: 12px; font-size: 12px; }\n.listing-location { color: #555; font-size: 13px; margin: 6px 0; }\n.view-btn { display: inline-block; background: #1a472a; color: white; padding: 10px 22px; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: bold; margin-top: 10px; }\n.footer { background: #1a472a; color: rgba(255,255,255,0.7); padding: 25px 30px; text-align: center; font-size: 12px; }\n.footer a { color: #95d5b2; }\n</style>\n</head>\n<body>\n<div class=\"wrapper\">\n  <div class=\"header\">\n    <div class=\"logo\">PURA<span>ESTATE</span></div>\n    <div class=\"header-subtitle\">Your Weekly Property Digest - Week of ${weekOf}</div>\n  </div>\n  <div class=\"hero\">\n    <h2>Hi ${firstName}, ${featured.length} new listings for you</h2>\n    <p>${personalizedListings.length} properties match your preferences this week.</p>\n  </div>\n  <div class=\"listings-grid\">\n    ${featured.map(listing => `\n    <div class=\"listing-card\">\n      <div class=\"listing-body\">\n        <div class=\"listing-title\">${listing.title}</div>\n        <div class=\"listing-price\">R ${Number(listing.price).toLocaleString()}</div>\n        <div class=\"listing-meta\">\n          ${listing.bedrooms > 0 ? `<span class=\"meta-tag\">${listing.bedrooms} Bed</span>` : ''}\n          ${listing.bathrooms > 0 ? `<span class=\"meta-tag\">${listing.bathrooms} Bath</span>` : ''}\n          ${listing.property_type ? `<span class=\"meta-tag\" style=\"text-transform:capitalize\">${listing.property_type}</span>` : ''}\n          ${listing.size_sqm > 0 ? `<span class=\"meta-tag\">${listing.size_sqm} m²</span>` : ''}\n        </div>\n        <div class=\"listing-location\">${listing.suburb ? listing.suburb + ', ' : ''}${listing.city}, ${listing.province}</div>\n        <a href=\"${listing.url}\" class=\"view-btn\">View Property</a>\n      </div>\n    </div>`).join('')}\n  </div>\n  <div style=\"background:white;padding:25px 30px;text-align:center;\">\n    <a href=\"https://puraestate.co.za/properties\" style=\"background:#2d6a4f;color:white;padding:14px 35px;text-decoration:none;border-radius:6px;font-size:16px;font-weight:bold;display:inline-block;\">Browse All Listings</a>\n  </div>\n  <div class=\"footer\">\n    <p>You're receiving this because you subscribed to PuraEstate property alerts.</p>\n    <p style=\"margin-top:8px;\"><a href=\"${unsubUrl}\">Unsubscribe</a> | <a href=\"https://puraestate.co.za/preferences\">Manage Preferences</a></p>\n    <p style=\"margin-top:8px;\">PuraEstate - South African Property Intelligence</p>\n  </div>\n</div>\n</body>\n</html>`;\n\nreturn [{\n  json: {\n    subscriber_id: subscriber.id,\n    email: subscriber.email,\n    first_name: firstName,\n    subject: `${featured.length} New Properties in ${subscriber.province_preference || 'South Africa'} - This Week`,\n    email_html: emailHtml,\n    listings_count: featured.length\n  }\n}];"
+      },
+      "id": "code-personalize-email",
+      "name": "Personalize Campaign Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 400]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.email }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "html",
+        "message": "={{ $json.email_html }}",
+        "options": {
+          "allowUnauthorizedCerts": false
+        }
+      },
+      "id": "email-send-campaign",
+      "name": "Send Campaign Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [920, 400],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-puraestate",
+          "name": "PuraEstate SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE email_subscribers \nSET last_email_sent = NOW(), emails_sent_count = COALESCE(emails_sent_count, 0) + 1\nWHERE id = {{ $('Personalize Campaign Email').item.json.subscriber_id }};",
+        "options": {}
+      },
+      "id": "postgres-update-subscriber",
+      "name": "Update Subscriber Last Sent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1140, 400],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Wednesday 10AM Campaign": {
+      "main": [
+        [
+          {
+            "node": "Get Active Subscribers",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get This Week's New Listings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Active Subscribers": {
+      "main": [
+        [
+          {
+            "node": "Personalize Campaign Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get This Week's New Listings": {
+      "main": [
+        [
+          {
+            "node": "Personalize Campaign Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Personalize Campaign Email": {
+      "main": [
+        [
+          {
+            "node": "Send Campaign Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Campaign Email": {
+      "main": [
+        [
+          {
+            "node": "Update Subscriber Last Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["integrations", "email", "campaigns", "puraestate"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}

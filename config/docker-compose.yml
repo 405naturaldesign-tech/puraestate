@@ -1,0 +1,123 @@
+version: '3.9'
+
+services:
+  # Firebase Emulator Suite
+  firebase-emulator:
+    image: firebase/firebase-tools:latest
+    container_name: pura-firebase-emulator
+    ports:
+      - "4000:4000"
+      - "5000:5000"
+      - "5001:5001"
+      - "8080:8080"
+      - "8085:8085"
+      - "9000:9000"
+      - "9099:9099"
+    environment:
+      - FIREBASE_PROJECT_ID=pura-estate-dev
+    volumes:
+      - ./firebase-emulator-data:/workspace/firebase-emulator-data
+    command: firebase emulators:start --project pura-estate-dev
+
+  # PostgreSQL for backend
+  postgres:
+    image: postgres:16-alpine
+    container_name: pura-postgres
+    environment:
+      POSTGRES_USER: pura_user
+      POSTGRES_PASSWORD: pura_password
+      POSTGRES_DB: pura_estate
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pura_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching
+  redis:
+    image: redis:7-alpine
+    container_name: pura-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MongoDB for NoSQL
+  mongodb:
+    image: mongo:7
+    container_name: pura-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: pura_user
+      MONGO_INITDB_ROOT_PASSWORD: pura_password
+      MONGO_INITDB_DATABASE: pura_estate
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend API
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: pura-api
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://pura_user:pura_password@postgres:5432/pura_estate
+      REDIS_URL: redis://redis:6379
+      MONGODB_URL: mongodb://pura_user:pura_password@mongodb:27017/pura_estate
+      FIREBASE_PROJECT_ID: pura-estate-dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    command: npm run dev
+
+  # Nginx reverse proxy
+  nginx:
+    image: nginx:alpine
+    container_name: pura-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
+  mongodb_data:
+
+networks:
+  default:
+    name: pura-network

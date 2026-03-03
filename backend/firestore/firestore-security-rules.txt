@@ -1,0 +1,362 @@
+/**
+ * Firestore Security Rules for PuraEstate
+ * Production-ready rules with role-based access control
+ */
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return request.auth.token.userType == 'admin';
+    }
+
+    function isAgent() {
+      return request.auth.token.userType == 'agent';
+    }
+
+    function isInvestor() {
+      return request.auth.token.userType == 'investor';
+    }
+
+    function isVerified() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.verificationStatus == 'verified';
+    }
+
+    function hasKYC() {
+      let userData = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      return userData.kycDocuments != null && userData.kycDocuments.size() > 0;
+    }
+
+    // USER COLLECTION
+    match /users/{userId} {
+      // Read: Users can read their own profile, public profiles (limited fields)
+      allow read: if isOwner(userId) ||
+                     isAdmin() ||
+                     (isAuthenticated() && isPublicProfile(userId));
+
+      // Create: Only authenticated users can create their own profile (during signup)
+      allow create: if isOwner(userId) && isAuthenticated();
+
+      // Update: Users can update their own profile, admins can update any
+      allow update: if isOwner(userId) || isAdmin();
+
+      // Delete: Only admins can delete user accounts
+      allow delete: if isAdmin();
+
+      function isPublicProfile(userId) {
+        return get(/databases/$(database)/documents/users/$(userId)).data.userType == 'agent';
+      }
+    }
+
+    // PROPERTIES COLLECTION
+    match /properties/{propertyId} {
+      // Read: Anyone can read active listings, only agents/admins see draft/sold
+      allow read: if resource.data.listingStatus == 'active' ||
+                     isAgent() ||
+                     isAdmin() ||
+                     isOwner(resource.data.agentId);
+
+      // Create: Only agents and admins can create properties
+      allow create: if (isAgent() || isAdmin()) &&
+                       validPropertyData();
+
+      // Update: Only property owner (agent) or admin can update
+      allow update: if (isOwner(resource.data.agentId) || isAdmin()) &&
+                       validPropertyData();
+
+      // Delete: Only owner (agent) or admin can delete
+      allow delete: if isOwner(resource.data.agentId) || isAdmin();
+
+      function validPropertyData() {
+        let data = request.resource.data;
+        return data.keys().hasAll(['title', 'address', 'price', 'propertyType']) &&
+               data.title is string && data.title.size() > 0 &&
+               data.address is map &&
+               data.price is map && data.price.amount > 0 &&
+               data.propertyType in ['residential', 'commercial', 'mixed', 'land'];
+      }
+    }
+
+    // PROPERTY IMAGES COLLECTION
+    match /property_images/{imageId} {
+      // Read: Same access as properties
+      allow read: if isAuthenticated();
+
+      // Create: Only agents/admins can add images
+      allow create: if (isAgent() || isAdmin()) &&
+                       validImageData();
+
+      // Update: Owner or admin only
+      allow update: if isAdmin();
+
+      // Delete: Owner (agent) or admin
+      allow delete: if isAdmin() ||
+                       isOwner(get(/databases/$(database)/documents/properties/$(resource.data.propertyId)).data.agentId);
+
+      function validImageData() {
+        let data = request.resource.data;
+        return data.propertyId is string &&
+               data.url is string &&
+               data.imageType in ['exterior', 'interior', 'bedroom', 'bathroom', 'common', 'amenities'];
+      }
+    }
+
+    // FAVORITES COLLECTION
+    match /favorites/{favoriteId} {
+      // Read: Users can only read their own favorites
+      allow read: if isOwner(resource.data.userId);
+
+      // Create: Users can only save their own favorites
+      allow create: if isOwner(request.resource.data.userId) && isAuthenticated();
+
+      // Update: Owner only
+      allow update: if isOwner(resource.data.userId);
+
+      // Delete: Owner only
+      allow delete: if isOwner(resource.data.userId);
+    }
+
+    // BOOKINGS COLLECTION
+    match /bookings/{bookingId} {
+      // Read: Owner, agent, or admin
+      allow read: if isOwner(resource.data.userId) ||
+                     isOwner(resource.data.agentId) ||
+                     isAdmin();
+
+      // Create: Investors/agents can create bookings
+      allow create: if isAuthenticated() &&
+                       validBookingData() &&
+                       isOwner(request.resource.data.userId);
+
+      // Update: Owner, agent, or admin can update
+      allow update: if (isOwner(resource.data.userId) ||
+                        isOwner(resource.data.agentId) ||
+                        isAdmin()) &&
+                       validBookingUpdate();
+
+      // Delete: Admin only (soft delete preferred)
+      allow delete: if isAdmin();
+
+      function validBookingData() {
+        let data = request.resource.data;
+        return data.propertyId is string &&
+               data.scheduledDate is timestamp &&
+               data.duration is number &&
+               data.duration > 0 &&
+               data.bookingType in ['viewing', 'investment_consultation', 'offer'];
+      }
+
+      function validBookingUpdate() {
+        let data = request.resource.data;
+        let oldData = resource.data;
+        return data.status in ['pending', 'confirmed', 'completed', 'cancelled', 'no_show'] &&
+               (data.status == oldData.status ||
+                (isOwner(oldData.agentId) && data.status == 'confirmed') ||
+                (isOwner(oldData.userId) && data.status == 'cancelled'));
+      }
+    }
+
+    // PAYMENTS COLLECTION
+    match /payments/{paymentId} {
+      // Read: Owner or admin only
+      allow read: if isOwner(resource.data.userId) || isAdmin();
+
+      // Create: Only via cloud functions (validate in backend)
+      allow create: if false; // All payment creation via Cloud Functions
+
+      // Update: Cloud functions and admins only
+      allow update: if false; // All payment updates via Cloud Functions
+
+      // Delete: Admin only
+      allow delete: if isAdmin();
+    }
+
+    // NOTIFICATIONS COLLECTION
+    match /notifications/{notificationId} {
+      // Read: Owner only
+      allow read: if isOwner(resource.data.userId);
+
+      // Create: Only via cloud functions
+      allow create: if false; // Via Cloud Functions only
+
+      // Update: Owner can mark as read, cloud functions can update delivery status
+      allow update: if isOwner(resource.data.userId) &&
+                       (request.resource.data.isRead == true);
+
+      // Delete: Owner or admin after 30 days
+      allow delete: if (isOwner(resource.data.userId) || isAdmin()) &&
+                       request.time > resource.data.createdAt + duration.value(30, 'd');
+    }
+
+    // PORTFOLIO ITEMS COLLECTION
+    match /portfolio_items/{portfolioId} {
+      // Read: Owner only
+      allow read: if isOwner(resource.data.userId);
+
+      // Create: Only via cloud functions or portfolio management
+      allow create: if isOwner(request.resource.data.userId) &&
+                       isVerified() &&
+                       hasKYC();
+
+      // Update: Owner only
+      allow update: if isOwner(resource.data.userId);
+
+      // Delete: Owner or admin
+      allow delete: if isOwner(resource.data.userId) || isAdmin();
+    }
+
+    // MARKET DATA COLLECTION
+    match /market_data/{dataId} {
+      // Read: Authenticated users only
+      allow read: if isAuthenticated();
+
+      // Create: Admin and cloud functions only
+      allow create: if isAdmin() || false;
+
+      // Update: Admin only
+      allow update: if isAdmin();
+
+      // Delete: Admin only
+      allow delete: if isAdmin();
+    }
+
+    // SUBSCRIPTIONS COLLECTION
+    match /subscriptions/{subscriptionId} {
+      // Read: Owner only
+      allow read: if isOwner(resource.data.userId);
+
+      // Create: Only via cloud functions
+      allow create: if false;
+
+      // Update: Owner can manage, cloud functions for status
+      allow update: if isOwner(resource.data.userId) || isAdmin();
+
+      // Delete: Admin only
+      allow delete: if isAdmin();
+    }
+
+    // MESSAGES COLLECTION
+    match /messages/{messageId} {
+      // Read: Participants only
+      allow read: if isOwner(resource.data.senderId) ||
+                     isOwner(resource.data.recipientId);
+
+      // Create: Sender only
+      allow create: if isOwner(request.resource.data.senderId) &&
+                       isAuthenticated();
+
+      // Update: Sender can edit own messages
+      allow update: if isOwner(resource.data.senderId);
+
+      // Delete: Participants or admin
+      allow delete: if isOwner(resource.data.senderId) ||
+                       isOwner(resource.data.recipientId) ||
+                       isAdmin();
+    }
+
+    // CONVERSATIONS COLLECTION
+    match /conversations/{conversationId} {
+      // Read: Participants only
+      allow read: if request.auth.uid in resource.data.participants;
+
+      // Create: Authenticated users
+      allow create: if isAuthenticated() &&
+                       request.auth.uid in request.resource.data.participants;
+
+      // Update: Participants only
+      allow update: if request.auth.uid in resource.data.participants;
+
+      // Delete: Admin only
+      allow delete: if isAdmin();
+    }
+
+    // AGENTS COLLECTION (extends users)
+    match /agents/{agentId} {
+      // Read: Public for agents (limited), private for owner/admin
+      allow read: if isAuthenticated();
+
+      // Create: Only via auth setup or admin
+      allow create: if isAdmin();
+
+      // Update: Owner or admin
+      allow update: if isOwner(agentId) || isAdmin();
+
+      // Delete: Admin only
+      allow delete: if isAdmin();
+    }
+
+    // SUPPORT TICKETS COLLECTION
+    match /support_tickets/{ticketId} {
+      // Read: Owner, assigned agent, or admin
+      allow read: if isOwner(resource.data.userId) ||
+                     isOwner(resource.data.assignedTo) ||
+                     isAdmin();
+
+      // Create: Authenticated users
+      allow create: if isOwner(request.resource.data.userId) && isAuthenticated();
+
+      // Update: Owner, assigned agent, or admin
+      allow update: if (isOwner(resource.data.userId) ||
+                        isOwner(resource.data.assignedTo) ||
+                        isAdmin());
+
+      // Delete: Admin only
+      allow delete: if isAdmin();
+    }
+
+    // ANALYTICS EVENTS COLLECTION
+    match /analytics_events/{eventId} {
+      // Read: Admin only
+      allow read: if isAdmin();
+
+      // Create: Cloud functions only
+      allow create: if false;
+
+      // Update: Never
+      allow update: if false;
+
+      // Delete: Admin only
+      allow delete: if isAdmin();
+    }
+
+    // REPORTS COLLECTION
+    match /reports/{reportId} {
+      // Read: Owner or admin
+      allow read: if isOwner(resource.data.userId) || isAdmin();
+
+      // Create: Cloud functions only
+      allow create: if false;
+
+      // Update: Never (immutable)
+      allow update: if false;
+
+      // Delete: Owner (after 30 days) or admin
+      allow delete: if (isOwner(resource.data.userId) || isAdmin()) &&
+                       request.time > resource.data.generatedAt + duration.value(30, 'd');
+    }
+
+    // ADMIN ANALYTICS COLLECTION
+    match /admin_analytics/{document=**} {
+      // Read: Admin only
+      allow read: if isAdmin();
+
+      // Write: Cloud functions only
+      allow write: if false;
+    }
+
+    // Catch-all rule (deny all other access)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

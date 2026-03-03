@@ -1,0 +1,312 @@
+{
+  "name": "PuraEstate - Health Monitoring",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/10 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-health",
+      "name": "Every 10 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Define all services to check\nconst services = [\n  { name: 'Flask API', url: 'http://localhost:5000/health', type: 'http', critical: true },\n  { name: 'Flask API Scraper', url: 'http://localhost:5000/api/status', type: 'http', critical: true },\n  { name: 'n8n', url: 'http://localhost:5678/healthz', type: 'http', critical: false },\n  { name: 'PuraEstate Frontend', url: 'https://puraestate.co.za', type: 'http', critical: true },\n  { name: 'PuraEstate API', url: 'https://api.puraestate.co.za/health', type: 'http', critical: true },\n  { name: 'Redis Cache', url: 'redis://localhost:6379', type: 'redis', critical: false }\n];\n\nreturn services.map(s => ({ json: s }));"
+      },
+      "id": "code-service-list",
+      "name": "Define Services to Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "PuraEstate-HealthCheck/1.0"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "http-check-service",
+      "name": "Check Service Health",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const serviceInfo = $('Define Services to Check').item.json;\nconst response = $input.first().json;\n\nconst statusCode = response.statusCode || response.status || 0;\nconst isUp = statusCode >= 200 && statusCode < 400;\nconst responseTime = response.headers?.['x-response-time'] || 'N/A';\n\nconst now = new Date().toISOString();\n\nreturn [{\n  json: {\n    service_name: serviceInfo.name,\n    service_url: serviceInfo.url,\n    service_type: serviceInfo.type,\n    critical: serviceInfo.critical,\n    is_up: isUp,\n    status_code: statusCode,\n    response_time: responseTime,\n    error: isUp ? null : (response.message || `HTTP ${statusCode}`),\n    checked_at: now\n  }\n}];"
+      },
+      "id": "code-evaluate",
+      "name": "Evaluate Health Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO health_checks (service_name, service_url, is_up, status_code, response_time, error_message, checked_at)\nVALUES (\n  '{{ $json.service_name }}',\n  '{{ $json.service_url }}',\n  {{ $json.is_up }},\n  {{ $json.status_code || 0 }},\n  '{{ $json.response_time }}',\n  {{ $json.error ? `'${$json.error.replace(/'/g, \"''\")}'` : 'NULL' }},\n  '{{ $json.checked_at }}'\n);",
+        "options": {}
+      },
+      "id": "postgres-log-health",
+      "name": "Log Health Check",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1120, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-down",
+              "leftValue": "={{ $json.is_up }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-service-down",
+      "name": "Service Down?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  COUNT(*) AS recent_failures\nFROM health_checks\nWHERE service_name = '{{ $json.service_name }}'\nAND is_up = false\nAND checked_at >= NOW() - INTERVAL '20 minutes';",
+        "options": {}
+      },
+      "id": "postgres-check-repeated",
+      "name": "Check if Repeated Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1560, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-repeated",
+              "leftValue": "={{ $json.recent_failures }}",
+              "rightValue": 2,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-repeated-failure",
+      "name": "Repeated Failure (>=2)?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1780, 200]
+    },
+    {
+      "parameters": {
+        "channel": "#alerts",
+        "text": "=:rotating_light: *SERVICE DOWN ALERT* :rotating_light:\n\nService: *{{ $('Evaluate Health Status').item.json.service_name }}*\nURL: {{ $('Evaluate Health Status').item.json.service_url }}\nError: {{ $('Evaluate Health Status').item.json.error }}\nStatus Code: {{ $('Evaluate Health Status').item.json.status_code }}\nCritical: {{ $('Evaluate Health Status').item.json.critical ? 'YES - IMMEDIATE ACTION REQUIRED' : 'No' }}\nTime: {{ new Date().toLocaleString('en-ZA') }}\n\nThis service has failed {{ $('Check if Repeated Failure').item.json.recent_failures }} times in the last 20 minutes.",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "slack-service-down",
+      "name": "Alert Service Down",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [2000, 100],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-puraestate",
+          "name": "PuraEstate Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.OPS_EMAIL }}",
+        "subject": "CRITICAL: {{ $('Evaluate Health Status').item.json.service_name }} is DOWN",
+        "emailFormat": "html",
+        "message": "=<h2 style='color:red;'>Service Down Alert</h2><p><strong>Service:</strong> {{ $('Evaluate Health Status').item.json.service_name }}</p><p><strong>URL:</strong> {{ $('Evaluate Health Status').item.json.service_url }}</p><p><strong>Error:</strong> {{ $('Evaluate Health Status').item.json.error }}</p><p><strong>Status Code:</strong> {{ $('Evaluate Health Status').item.json.status_code }}</p><p><strong>Time:</strong> {{ new Date().toLocaleString('en-ZA') }}</p><p><strong>Failures (last 20 min):</strong> {{ $('Check if Repeated Failure').item.json.recent_failures }}</p><hr><p>Please investigate immediately.</p>",
+        "options": {}
+      },
+      "id": "email-ops-alert",
+      "name": "Email Ops Team",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [2000, 300],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-puraestate",
+          "name": "PuraEstate SMTP"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 10 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Define Services to Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Define Services to Check": {
+      "main": [
+        [
+          {
+            "node": "Check Service Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Service Health": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Health Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Health Status": {
+      "main": [
+        [
+          {
+            "node": "Log Health Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Health Check": {
+      "main": [
+        [
+          {
+            "node": "Service Down?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Service Down?": {
+      "main": [
+        [
+          {
+            "node": "Check if Repeated Failure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Check if Repeated Failure": {
+      "main": [
+        [
+          {
+            "node": "Repeated Failure (>=2)?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Repeated Failure (>=2)?": {
+      "main": [
+        [
+          {
+            "node": "Alert Service Down",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Email Ops Team",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["admin", "health", "monitoring", "puraestate"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}

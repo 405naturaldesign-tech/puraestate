@@ -1,0 +1,112 @@
+#!/bin/bash
+# Script Configuration for PuraEstate CI/CD
+# Source this file in shell initialization
+
+# Script Directories
+export SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/scripts" && pwd)"
+export PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Make scripts executable (run once)
+make_scripts_executable() {
+    chmod +x "$SCRIPTS_DIR/build.sh"
+    chmod +x "$SCRIPTS_DIR/release.sh"
+    chmod +x "$SCRIPTS_DIR/rollback.sh"
+    chmod +x "$SCRIPTS_DIR/migrate-db.sh"
+    echo "Scripts are now executable"
+}
+
+# Aliases for convenience
+alias build-dev="$SCRIPTS_DIR/build.sh dev"
+alias build-staging="$SCRIPTS_DIR/build.sh staging"
+alias build-prod="$SCRIPTS_DIR/build.sh production"
+
+alias release-patch="$SCRIPTS_DIR/release.sh patch"
+alias release-minor="$SCRIPTS_DIR/release.sh minor"
+alias release-major="$SCRIPTS_DIR/release.sh major"
+
+alias rollback="$SCRIPTS_DIR/rollback.sh"
+alias migrate-db="$SCRIPTS_DIR/migrate-db.sh"
+
+# Quick commands
+alias lint="npm run lint"
+alias test="npm run test"
+alias build="npm run build"
+
+# Git aliases
+alias git-status="git status -sb"
+alias git-push="git push origin --all"
+alias git-pull="git pull origin --all"
+
+# Environment shortcuts
+set-dev-env() {
+    export ENVIRONMENT=development
+    export API_URL=http://localhost:3000
+    echo "Environment: development"
+}
+
+set-staging-env() {
+    export ENVIRONMENT=staging
+    export API_URL=https://staging-api.puraestate.com
+    echo "Environment: staging"
+}
+
+set-prod-env() {
+    export ENVIRONMENT=production
+    export API_URL=https://api.puraestate.com
+    echo "Environment: production"
+}
+
+# CI/CD Status
+ci-status() {
+    echo "Checking CI/CD Status..."
+    echo ""
+    echo "Recent workflow runs:"
+    gh run list --limit 5
+}
+
+# Quick setup after clone
+quick-setup() {
+    echo "Running quick setup..."
+    npm ci
+    npm install -g eas-cli
+    cp .env.example .env.development
+    cp .env.example .env.staging
+    cp .env.example .env.production
+    make_scripts_executable
+    echo ""
+    echo "Setup complete! Next steps:"
+    echo "1. Update .env.development with dev values"
+    echo "2. Update .env.staging with staging values"
+    echo "3. Update .env.production with production values"
+    echo "4. Run: eas login"
+}
+
+# Documentation
+ci-docs() {
+    echo "PuraEstate CI/CD Documentation"
+    echo ""
+    echo "Main guides:"
+    echo "  - SETUP_CI_CD.md - Getting started guide"
+    echo "  - .github/CI_CD_GUIDE.md - Complete CI/CD documentation"
+    echo "  - .github/BRANCH_PROTECTION.md - Branch rules setup"
+    echo "  - .github/SECRETS_SETUP.md - GitHub Secrets configuration"
+    echo "  - .github/workflows/README.md - Workflows reference"
+    echo ""
+    echo "Scripts:"
+    echo "  - build-dev/staging/prod - Local builds"
+    echo "  - release-patch/minor/major - Create releases"
+    echo "  - rollback - Rollback to previous version"
+    echo "  - migrate-db - Database migrations"
+}
+
+echo "PuraEstate CI/CD Configuration Loaded"
+echo ""
+echo "Available commands:"
+echo "  ci-docs                    - Show documentation"
+echo "  quick-setup               - First-time setup"
+echo "  make_scripts_executable   - Make scripts runnable"
+echo "  build-dev/staging/prod    - Build commands"
+echo "  release-patch/minor/major - Release commands"
+echo "  set-dev/staging/prod-env  - Switch environments"
+echo "  ci-status                 - Check GitHub Actions status"
+echo ""

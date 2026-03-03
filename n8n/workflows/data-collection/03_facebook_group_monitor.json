@@ -1,0 +1,233 @@
+{
+  "name": "PuraEstate - Facebook Group Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */3 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-fb-groups",
+      "name": "Every 3 Hours Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Define South African real estate Facebook groups to monitor\nconst groups = [\n  { id: '123456789', name: 'Cape Town Properties For Sale', location: 'Cape Town' },\n  { id: '234567890', name: 'Johannesburg Real Estate', location: 'Johannesburg' },\n  { id: '345678901', name: 'Durban Properties', location: 'Durban' },\n  { id: '456789012', name: 'Pretoria Houses For Sale', location: 'Pretoria' },\n  { id: '567890123', name: 'South Africa Property Investment', location: 'National' },\n  { id: '678901234', name: 'Cape Winelands Properties', location: 'Stellenbosch' },\n  { id: '789012345', name: 'Garden Route Real Estate', location: 'George' }\n];\n\nreturn groups.map(g => ({ json: g }));"
+      },
+      "id": "code-group-list",
+      "name": "Load Group List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:5000/api/facebook/groups/posts",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.FLASK_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "group_id",
+              "value": "={{ $json.id }}"
+            },
+            {
+              "name": "group_name",
+              "value": "={{ $json.name }}"
+            },
+            {
+              "name": "location",
+              "value": "={{ $json.location }}"
+            },
+            {
+              "name": "hours_back",
+              "value": "3"
+            },
+            {
+              "name": "keywords",
+              "value": "={{ JSON.stringify(['for sale', 'te koop', 'R ', 'bedroom', 'bed', 'property', 'house', 'apartment', 'flat']) }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "http-fetch-group-posts",
+      "name": "Fetch Group Posts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst posts = data.posts || [];\nconst groupName = $('Load Group List').item.json.name;\nconst groupLocation = $('Load Group List').item.json.location;\nconst processedAt = new Date().toISOString();\n\n// Keywords that suggest a property listing\nconst listingKeywords = ['for sale', 'te koop', 'bedroom', 'bathroom', 'r 1', 'r 2', 'r 3', 'r 4', 'r 5', 'r 6', 'r 7', 'r 8', 'r 9', 'r 10', 'selling', 'property', 'house', 'apartment', 'plot', 'land'];\n\nconst isListing = (text) => {\n  const lower = text.toLowerCase();\n  return listingKeywords.some(kw => lower.includes(kw));\n};\n\nconst extractPrice = (text) => {\n  // Patterns: R1500000, R 1,500,000, R1.5m, 1500000\n  const patterns = [\n    /R\\s?([\\d][\\d\\s,]{2,})/gi,\n    /R\\s?([\\d\\.]+)\\s*(?:million|m|mil)/gi,\n    /([\\d][\\d\\s,]{5,})\\s*(?:rand|zar)/gi\n  ];\n\n  for (const pattern of patterns) {\n    const match = text.match(pattern);\n    if (match) {\n      let priceStr = match[0].replace(/[R\\s,]/gi, '');\n      if (priceStr.toLowerCase().includes('m')) {\n        priceStr = parseFloat(priceStr) * 1000000;\n      }\n      const price = parseFloat(priceStr);\n      if (price > 50000 && price < 100000000) return price;\n    }\n  }\n  return 0;\n};\n\nconst filteredPosts = posts\n  .filter(post => isListing(post.text || ''))\n  .map(post => ({\n    listing_id: `fb_group_${post.post_id}`,\n    title: (post.text || '').substring(0, 100),\n    description: post.text || '',\n    price: extractPrice(post.text || ''),\n    price_currency: 'ZAR',\n    source: 'facebook_group',\n    source_group: groupName,\n    city: groupLocation,\n    province: post.province || '',\n    url: `https://www.facebook.com/groups/${data.group_id}/posts/${post.post_id}`,\n    seller_name: post.author?.name || '',\n    seller_profile: post.author?.profile_url || '',\n    images: post.images || [],\n    post_date: post.created_time || processedAt,\n    scraped_at: processedAt,\n    status: 'active',\n    property_type: 'unknown',\n    bedrooms: 0,\n    bathrooms: 0,\n    suburb: '',\n    size_sqm: 0\n  }));\n\nreturn filteredPosts.map(p => ({ json: p }));"
+      },
+      "id": "code-extract-listings",
+      "name": "Extract Property Listings from Posts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-price",
+              "leftValue": "={{ $json.price }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-price",
+      "name": "Has Valid Price?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO properties (listing_id, title, price, price_currency, bedrooms, bathrooms, property_type, suburb, city, province, url, source, description, agent_name, images, scraped_at, status)\nVALUES (\n  '{{ $json.listing_id }}',\n  '{{ $json.title.replace(/'/g, \"''\") }}',\n  {{ $json.price }},\n  '{{ $json.price_currency }}',\n  {{ $json.bedrooms }},\n  {{ $json.bathrooms }},\n  '{{ $json.property_type }}',\n  '{{ $json.suburb }}',\n  '{{ $json.city }}',\n  '{{ $json.province }}',\n  '{{ $json.url }}',\n  '{{ $json.source }}',\n  '{{ $json.description.replace(/'/g, \"''\") }}',\n  '{{ $json.seller_name }}',\n  '{{ JSON.stringify($json.images) }}',\n  '{{ $json.scraped_at }}',\n  '{{ $json.status }}'\n)\nON CONFLICT (listing_id) DO NOTHING\nRETURNING id, listing_id, title, price;",
+        "options": {}
+      },
+      "id": "postgres-insert-group",
+      "name": "Store Group Listing",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1340, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO fb_group_raw_posts (post_id, group_name, author_name, post_text, post_url, post_date, images, scraped_at, has_valid_price)\nVALUES (\n  '{{ $json.listing_id }}',\n  '{{ $json.source_group }}',\n  '{{ $json.seller_name }}',\n  '{{ $json.description.replace(/'/g, \"''\") }}',\n  '{{ $json.url }}',\n  '{{ $json.post_date }}',\n  '{{ JSON.stringify($json.images) }}',\n  '{{ $json.scraped_at }}',\n  false\n)\nON CONFLICT (post_id) DO NOTHING;",
+        "options": {}
+      },
+      "id": "postgres-store-raw",
+      "name": "Store Raw Post for Review",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [1340, 420],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-puraestate",
+          "name": "PuraEstate PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 3 Hours Trigger": {
+      "main": [
+        [
+          {
+            "node": "Load Group List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Group List": {
+      "main": [
+        [
+          {
+            "node": "Fetch Group Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Group Posts": {
+      "main": [
+        [
+          {
+            "node": "Extract Property Listings from Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Property Listings from Posts": {
+      "main": [
+        [
+          {
+            "node": "Has Valid Price?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Valid Price?": {
+      "main": [
+        [
+          {
+            "node": "Store Group Listing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Store Raw Post for Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["data-collection", "facebook", "groups", "puraestate"],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-22T00:00:00.000Z",
+  "versionId": "1"
+}
