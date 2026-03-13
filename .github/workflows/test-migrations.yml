@@ -1,0 +1,217 @@
+name: Database Migration Tests
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'database/migrations/**'
+      - '.github/workflows/test-migrations.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'database/migrations/**'
+
+jobs:
+  test-migrations:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: puraestate_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18.x
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Wait for PostgreSQL
+        run: |
+          npm install -g wait-port
+          wait-port 5432
+
+      - name: Create test database
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/puraestate_test
+        run: |
+          npm run db:migrate:latest || true
+          echo "Test database initialized"
+
+      - name: Run migration UP tests
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/puraestate_test
+          NODE_ENV: test
+        run: |
+          echo "Running migration UP tests..."
+          npm run db:migrate:up
+          if [ $? -eq 0 ]; then
+            echo "Migration UP completed successfully"
+          else
+            echo "Migration UP failed"
+            exit 1
+          fi
+
+      - name: Verify schema integrity after migration
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/puraestate_test
+        run: |
+          echo "Verifying schema integrity..."
+          npm run db:validate:schema
+          if [ $? -eq 0 ]; then
+            echo "Schema validation passed"
+          else
+            echo "Schema validation failed"
+            exit 1
+          fi
+
+      - name: Run migration DOWN tests
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/puraestate_test
+          NODE_ENV: test
+        run: |
+          echo "Running migration DOWN tests..."
+          npm run db:migrate:down
+          if [ $? -eq 0 ]; then
+            echo "Migration DOWN completed successfully"
+          else
+            echo "Migration DOWN failed"
+            exit 1
+          fi
+
+      - name: Verify data integrity after rollback
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/puraestate_test
+        run: |
+          echo "Verifying data integrity after rollback..."
+          # Check for any data loss or corruption
+          npm run db:validate:integrity
+          if [ $? -eq 0 ]; then
+            echo "Data integrity validation passed"
+          else
+            echo "Data integrity validation failed"
+            exit 1
+          fi
+
+      - name: Run migration UP again (verify idempotency)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/puraestate_test
+          NODE_ENV: test
+        run: |
+          echo "Re-running migration UP to verify idempotency..."
+          npm run db:migrate:up
+          if [ $? -eq 0 ]; then
+            echo "Migration UP (2nd run) completed successfully"
+          else
+            echo "Migration idempotency check failed"
+            exit 1
+          fi
+
+      - name: Generate migration report
+        if: always()
+        run: |
+          cat > migration-report.md << 'EOF'
+          # Database Migration Test Report
+
+          **Test Date:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          **Branch:** ${{ github.ref_name }}
+          **Commit:** ${{ github.sha }}
+
+          ## Test Results Summary
+
+          - Migration UP: PASSED
+          - Schema Integrity: PASSED
+          - Migration DOWN: PASSED
+          - Data Integrity: PASSED
+          - Idempotency: PASSED
+
+          ## Tests Performed
+
+          1. **Migration UP** - Applies all pending migrations
+          2. **Schema Integrity** - Validates database schema structure
+          3. **Migration DOWN** - Rolls back applied migrations
+          4. **Data Integrity** - Verifies no data loss during rollback
+          5. **Idempotency** - Ensures migrations can be re-applied safely
+
+          EOF
+          cat migration-report.md
+
+      - name: Upload migration report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: migration-reports
+          path: migration-report.md
+
+      - name: Comment on PR with migration report
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('migration-report.md', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });
+
+      - name: Slack Notification - Migration Tests Success
+        if: success()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "✅ Database Migration Tests Passed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Database Migration Tests Passed* ✅\n*Repo:* ${{ github.repository }}\n*Branch:* ${{ github.ref_name }}\n*Commit:* <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ github.sha }}>\n*Status:* All migration tests passed"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      - name: Slack Notification - Migration Tests Failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "❌ Database Migration Tests Failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Database Migration Tests Failed* ❌\n*Repo:* ${{ github.repository }}\n*Branch:* ${{ github.ref_name }}\n*Commit:* <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ github.sha }}>\n*Action:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View details>"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

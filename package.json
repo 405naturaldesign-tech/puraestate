@@ -36,7 +36,8 @@
     "prebuild": "expo prebuild",
     "prebuild:clean": "expo prebuild --clean",
     "dev": "expo start",
-    "postinstall": "patch-package",
+    "postinstall": "patch-package && husky install",
+    "prepare": "husky install",
     "ai:match": "node ai/matching/src/index.js",
     "ai:analyze-costs": "node ai/matching/src/analytics/costAnalyzer.js",
     "composio:dev": "tsx automation/composio/src/index.ts",
@@ -44,7 +45,9 @@
     "admin:dev": "cd admin && npm run dev",
     "docker:up": "docker-compose -f docker/docker-compose.yml up -d",
     "docker:down": "docker-compose -f docker/docker-compose.yml down",
-    "deploy:playstore": "bash scripts/deploy-playstore.sh"
+    "deploy:playstore": "bash scripts/deploy-playstore.sh",
+    "pre-commit": "bash scripts/pre-commit-check.sh",
+    "pre-commit:skip": "git commit --no-verify"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^1.23.1",
@@ -171,6 +174,22 @@
       "@stripe/stripe-react-native",
       "@react-native-async-storage/async-storage",
       "@react-native-camera-roll/camera-roll"
+    ]
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{js,jsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.json": [
+      "prettier --write"
+    ],
+    "*.md": [
+      "prettier --write"
     ]
   }
 }

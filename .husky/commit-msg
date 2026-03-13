@@ -1,0 +1,83 @@
+#!/bin/sh
+. "$(dirname "$0")/_/husky.sh"
+
+# Get commit message
+COMMIT_MSG_FILE=$1
+COMMIT_MSG=$(cat "$COMMIT_MSG_FILE")
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+echo "📋 Validating commit message..."
+
+# Get first line (subject)
+FIRST_LINE=$(echo "$COMMIT_MSG" | head -n 1)
+
+# Remove comments from commit message
+SUBJECT=$(echo "$FIRST_LINE" | grep -v "^#" | head -n 1)
+
+# 1. Check conventional commit format
+if ! echo "$SUBJECT" | grep -qE "^(feat|fix|docs|test|refactor|style|chore|ci|perf)(\(.+\))?: .{1,}"; then
+  echo -e "${RED}❌ Commit message does not follow conventional commits format${NC}"
+  echo ""
+  echo "Expected format:"
+  echo "  <type>(<optional-scope>): <description>"
+  echo ""
+  echo "Valid types:"
+  echo "  - feat:     A new feature"
+  echo "  - fix:      A bug fix"
+  echo "  - docs:     Documentation changes"
+  echo "  - test:     Adding or updating tests"
+  echo "  - refactor: Code refactoring"
+  echo "  - style:    Code style changes (no functional change)"
+  echo "  - chore:    Dependency updates or build changes"
+  echo "  - ci:       CI/CD configuration changes"
+  echo "  - perf:     Performance improvements"
+  echo ""
+  echo "Examples:"
+  echo "  feat(auth): add login validation"
+  echo "  fix: prevent race condition in scheduler"
+  echo "  docs(readme): update installation instructions"
+  echo ""
+  exit 1
+fi
+
+# 2. Check subject line length (should be <= 72 characters for email clients, warn at 50)
+SUBJECT_LENGTH=${#SUBJECT}
+if [ $SUBJECT_LENGTH -gt 72 ]; then
+  echo -e "${RED}❌ Subject line is too long ($SUBJECT_LENGTH characters, max 72)${NC}"
+  exit 1
+elif [ $SUBJECT_LENGTH -gt 50 ]; then
+  echo -e "${YELLOW}⚠️  Subject line is long ($SUBJECT_LENGTH characters, recommended < 50)${NC}"
+fi
+
+# 3. Check that subject doesn't end with a period
+if echo "$SUBJECT" | grep -qE "\.+$"; then
+  echo -e "${RED}❌ Subject line should not end with a period${NC}"
+  exit 1
+fi
+
+# 4. Validate body structure (if present)
+if [ $(echo "$COMMIT_MSG" | wc -l) -gt 1 ]; then
+  # If there's a body, check blank line after subject
+  SECOND_LINE=$(echo "$COMMIT_MSG" | sed -n '2p')
+  if [ -n "$SECOND_LINE" ] && ! echo "$SECOND_LINE" | grep -qE "^#|^$"; then
+    echo -e "${YELLOW}⚠️  There should be a blank line between subject and body${NC}"
+  fi
+
+  # Check body line length (should be <= 100 characters)
+  echo "$COMMIT_MSG" | tail -n +3 | while IFS= read -r line; do
+    if [ -n "$line" ] && ! echo "$line" | grep -qE "^#"; then
+      LINE_LENGTH=${#line}
+      if [ $LINE_LENGTH -gt 100 ]; then
+        echo -e "${YELLOW}⚠️  Body line exceeds 100 characters: $LINE_LENGTH chars${NC}"
+      fi
+    fi
+  done
+fi
+
+echo -e "${GREEN}✓ Commit message is valid${NC}"
+exit 0

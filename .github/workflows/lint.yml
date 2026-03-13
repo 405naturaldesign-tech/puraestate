@@ -37,7 +37,22 @@ jobs:
 
       - name: Check formatting with Prettier
         run: npx prettier --check 'src/**/*.{ts,tsx,json,md}'
-        continue-on-error: true
+        continue-on-error: false
+
+      - name: Validate pre-commit hooks
+        run: |
+          if [ -f .husky/pre-commit ]; then
+            echo "Pre-commit hooks found. Validating..."
+            # Verify pre-commit hook is executable
+            if [ ! -x .husky/pre-commit ]; then
+              echo "Error: Pre-commit hook is not executable"
+              exit 1
+            fi
+            echo "Pre-commit hooks are properly configured"
+          else
+            echo "Warning: No pre-commit hooks configured"
+          fi
+        continue-on-error: false
 
       - name: Slack Notification - Success
         if: success()

@@ -1,0 +1,185 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║        PuraEstate Git Hooks - Quick Reference Guide                         ║
+║                                                                              ║
+║  Location: /home/thegoodideallc/puraestate/.husky/                          ║
+║  Status: Active and Ready                                                   ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+SETUP (One Time)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  npm install              # Auto-installs hooks via postinstall
+  npx husky install        # Manual install if needed
+  ls -la .husky/          # Verify hooks exist
+
+EVERYDAY USAGE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  git add .
+  git commit -m "type(scope): description"   # Hook runs automatically
+
+  Valid types: feat, fix, docs, test, refactor, style, chore, ci, perf
+
+  Example: git commit -m "feat(auth): add login validation"
+
+MANUAL CHECKS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  npm run pre-commit       # Run pre-commit validations
+  npm run lint            # ESLint check
+  npm run format          # Prettier formatting
+  npm run type-check      # TypeScript check
+  npm run test:ci         # Full test suite (what pre-push runs)
+
+WHEN PRE-COMMIT FAILS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  npm run lint:fix        # Auto-fix ESLint issues
+  npm run format          # Auto-fix Prettier issues
+
+  Then re-stage and commit:
+  git add .
+  git commit -m "type: description"
+
+WHEN PRE-PUSH FAILS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  npm run test:ci         # Run exact test command hook uses
+  npm run test:watch      # Debug tests locally
+
+  Fix tests, then:
+  git push origin branch-name
+
+EMERGENCY: BYPASS HOOKS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  git commit --no-verify           # Skip pre-commit hook
+  HUSKY=0 git push                 # Skip all hooks
+  npm run pre-commit:skip          # Equivalent to --no-verify
+
+  ⚠️  Use only when absolutely necessary!
+
+COMMIT MESSAGE FORMAT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  [type]([scope]): [description]
+
+  Required: type and description
+  Optional: scope
+
+  ✅ Good:
+    feat(auth): add two-factor authentication
+    fix: prevent race condition in scheduler
+    docs(api): update endpoint documentation
+
+  ❌ Bad:
+    add login page
+    FEATURE: NEW CODE
+    fixed bug.
+
+WHAT EACH HOOK DOES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  🔴 pre-commit (Before committing):
+     • ESLint code quality check
+     • Prettier formatting check
+     • TypeScript type checking
+     • Detects console.log statements
+     • Checks for hardcoded secrets
+     • Validates commit message format
+     FAILS: Commit is blocked
+
+  🟡 pre-push (Before pushing):
+     • Runs full test suite
+     • Security audit (npm audit)
+     FAILS: Push is blocked
+
+  🟢 commit-msg (During commit):
+     • Validates conventional commit format
+     • Checks subject line length (≤72 chars)
+     • Ensures proper message structure
+     FAILS: Rejects commit with format help
+
+FILES IN THIS DIRECTORY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  pre-commit              Main pre-commit hook script
+  pre-push                Main pre-push hook script
+  commit-msg              Commit message validation
+  _/husky.sh              System helper script (do not edit)
+  README.md               Detailed documentation
+  QUICK_REFERENCE.txt     This file
+
+COMMON TYPES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  feat       - New feature: "feat(maps): add location clustering"
+  fix        - Bug fix: "fix(auth): resolve token expiration"
+  docs       - Documentation: "docs(readme): update setup guide"
+  test       - Tests: "test(api): add error handling tests"
+  refactor   - Code refactoring: "refactor(core): simplify logic"
+  style      - Formatting only: "style: remove trailing whitespace"
+  chore      - Dependencies: "chore: update react to v18"
+  ci         - CI/CD: "ci: add GitHub Actions workflow"
+  perf       - Performance: "perf(core): optimize bundle size"
+
+TESTING HOOKS LOCALLY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  npm run pre-commit          # Test pre-commit checks
+  npm run test:ci             # Test pre-push checks
+  npm run lint                # Test ESLint separately
+  npm run format:check        # Test Prettier separately
+  npm run type-check          # Test TypeScript separately
+
+SETUP IDE FOR REAL-TIME FEEDBACK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  VS Code:
+    Install: ESLint, Prettier extensions
+    Enable: Format on save
+
+  WebStorm/IntelliJ:
+    Settings > Languages & Frameworks > JavaScript
+    Enable: ESLint
+    Enable: Prettier
+
+  Benefits:
+    • See errors before commit
+    • Auto-fix on save
+    • Fewer hook failures
+    • Faster development
+
+TROUBLESHOOTING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Hooks not running?
+    → npx husky install
+    → ls -la .husky/
+
+  "npm not found" in hook?
+    → npm install
+    → Try again
+
+  Different errors locally vs hook?
+    → rm -rf node_modules package-lock.json
+    → npm install
+
+  Tests fail in hook but pass locally?
+    → npm run test:ci  (this is what hook runs)
+
+NEED HELP?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Read: .husky/README.md                    (detailed docs)
+  Read: ../HOOKS_SETUP.md                   (setup guide)
+  Run:  npm run pre-commit                  (test checks)
+  Ask:  Team Slack/Discord/Wiki
+
+KEY SHORTCUTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  npm run lint:fix            = Auto-fix code style
+  npm run format              = Auto-fix formatting
+  npm run pre-commit          = Manual pre-commit check
+  npm run pre-commit:skip     = Skip pre-commit (use rarely)
+  HUSKY=0 git push            = Skip all hooks (use very rarely)
+
+REMEMBER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ✅ Hooks exist to maintain code quality
+  ✅ Fix issues, don't bypass hooks
+  ✅ Use npm run lint:fix for quick fixes
+  ✅ Keep IDE updated with ESLint/Prettier
+  ✅ Understand why hooks fail, then fix
+
+╔════════════════════════════════════════════════════════════════════════════╗
+║  Hooks configured and ready for use!                                       ║
+║  Last Updated: March 12, 2026                                              ║
+╚════════════════════════════════════════════════════════════════════════════╝

@@ -27,7 +27,7 @@ jobs:
 
       - name: Run npm audit
         run: npm audit --audit-level=moderate
-        continue-on-error: true
+        continue-on-error: false
 
       - name: Run SNYK security scan
         uses: snyk/actions/node@master
@@ -35,7 +35,7 @@ jobs:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
           args: --severity-threshold=high
-        continue-on-error: true
+        continue-on-error: false
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
@@ -44,18 +44,18 @@ jobs:
           scan-ref: '.'
           format: 'sarif'
           output: 'trivy-results.sarif'
-        continue-on-error: true
+        continue-on-error: false
 
       - name: Upload Trivy results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v2
         with:
           sarif_file: 'trivy-results.sarif'
-        continue-on-error: true
+        continue-on-error: false
 
       - name: Run ESLint security rules
         run: |
           npm run lint -- --ext .ts,.tsx --plugin security
-        continue-on-error: true
+        continue-on-error: false
 
       - name: Check for hardcoded secrets
         uses: trufflesecurity/trufflehog@main
@@ -64,7 +64,7 @@ jobs:
           base: ${{ github.event.repository.default_branch }}
           head: HEAD
           extra_args: --debug --only-verified
-        continue-on-error: true
+        continue-on-error: false
 
       - name: Upload security reports
         if: always()
