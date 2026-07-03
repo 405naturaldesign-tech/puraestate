@@ -1,0 +1,30 @@
+{
+  "name": "CopWatchAI Prompt Stack",
+  "version": "1.0",
+  "prompts": [
+    {
+      "id": "transcription_summary",
+      "name": "Transcription to Summary",
+      "description": "Summarizes a police encounter from transcription",
+      "prompt": "You are an incident summarizer for CopWatchAI.\nInput: A transcript of a police interaction.\nOutput: A clear, factual summary that includes:\n- Who was involved\n- What happened\n- Time and location details\n- Any rights violations or aggressive behavior\n- Legal notes\n\nTranscript:\n{{transcript}}\n\nSummary:"
+    },
+    {
+      "id": "rights_check",
+      "name": "Know Your Rights Assistant",
+      "description": "Advises user of their rights based on a short situation description",
+      "prompt": "You are a legal assistant that explains citizens' rights in the US.\nThe user provides a situation, and you respond with:\n- A brief explanation of their rights\n- Recommended immediate action\n- Legal reference if applicable\n\nSituation:\n{{situation}}\n\nResponse:"
+    },
+    {
+      "id": "incident_report_generator",
+      "name": "Incident Report Generator",
+      "description": "Generates a full incident report from location, date, media, and summary",
+      "prompt": "Generate a formal incident report for CopWatchAI.\nInclude the following:\n- Title\n- Date and Time\n- Location\n- Summary of Events\n- Attached Media References\n- Suggested Legal Follow-up\n\nData:\nLocation: {{location}}\nDateTime: {{datetime}}\nMedia: {{media_links}}\nSummary: {{summary}}\n\nIncident Report:"
+    },
+    {
+      "id": "severity_classifier",
+      "name": "Incident Severity Classifier",
+      "description": "Classifies incident severity from transcript or report",
+      "prompt": "Based on the text, classify the severity of the incident as one of:\n- Low (no rights violated, no conflict)\n- Medium (minor rights concern, raised voices, tension)\n- High (rights violated, threats, violence, arrest)\nJustify the classification briefly.\n\nText:\n{{text}}\n\nClassification:"
+    }
+  ]
+}

@@ -1,0 +1,563 @@
+{
+  "name": "₩^♡^₩ Agent Swarm (LLM) — Webhook + History + Handoffs",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agent-swarm",
+        "options": {
+          "responseData": "auto",
+          "responseCode": 200
+        }
+      },
+      "id": "1",
+      "name": "Webhook In",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Normalize input, attach a sessionId, and basic meta\nconst body = $json.body ?? $json ?? {};\nconst sessionId = body.sessionId || $query.sessionId || $headers['x-session-id'] || Date.now().toString();\nconst userGoal  = body.goal || body.prompt || body.query || 'Summarize and analyze topic';\nconst userData  = body.data  || {};\nconst now = new Date().toISOString();\n\nreturn [{\n  json: {\n    meta: {\n      sessionId,\n      receivedAt: now,\n      ip: $headers['x-forwarded-for'] || $headers['cf-connecting-ip'] || $headers['x-real-ip'] || null,\n      userAgent: $headers['user-agent'] || null\n    },\n    input: {\n      goal: userGoal,\n      data: userData\n    }\n  }\n}];\n"
+      },
+      "id": "2",
+      "name": "Init Context",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataStoreId": "={{$env.SWARM_DATASTORE_ID}}",
+        "key": "={{$json.meta.sessionId}}",
+        "returnAll": false
+      },
+      "id": "3",
+      "name": "History: Get",
+      "type": "n8n-nodes-base.dataStore",
+      "typeVersion": 1,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Merge previous history (if any) with the fresh input\nconst prev = $json.value || null;\nconst history = prev && prev.history ? prev.history : [];\n// keep last 10 turns to bound token usage\nconst trimmed = history.slice(-10);\n\nconst merged = {\n  meta: $json.meta || prev?.meta || {},\n  input: $json.input || {},\n  history: trimmed\n};\n\nreturn [{ json: merged }];\n"
+      },
+      "id": "4",
+      "name": "History: Merge",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        680,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Helper: build OpenAI Chat payload with role prompts\nfunction chatPayload(systemPrompt, userContent, temperature=0.3) {\n  const model = $env.OPENAI_MODEL || \"gpt-4o-mini\";\n  return {\n    model,\n    temperature,\n    messages: [\n      { role: \"system\", content: systemPrompt },\n      // pack short history for handoff-awareness\n      ...($json.history || []).map(h => ({ role: h.role || \"user\", content: h.content })),\n      { role: \"user\", content: userContent }\n    ]\n  };\n}\n\nconst goal = $json.input.goal;\n\nreturn [{\n  json: {\n    researcher: chatPayload(\n      \"You are Researcher-α. Discover facts, sources, constraints. Return JSON: {insights:[],sources:[],risks:[],next_step:\"...\"}. Be concise, cite URLs.\",\n      `Goal: ${goal}\\nData: ${JSON.stringify($json.input.data || {}, null, 2)}`\n    ),\n    strategist: chatPayload(\n      \"You are Strategist-β. Turn findings into a step-by-step plan. Return JSON: {plan:[{step,why,owner}],dependencies:[],success_criteria:[],next_step:\"...\"}.\",\n      \"Use Researcher-α output in your reasoning.\"\n    ),\n    builder: chatPayload(\n      \"You are Builder-γ. Produce the concrete deliverable (code/text). Return JSON: {artifact_type:\"code|copy|plan\", artifact:\"...\", notes:[],next_step:\"...\"}.\",\n      \"Implement Strategist-β plan minimally (MVP).\"\n    ),\n    reviewer: chatPayload(\n      \"You are Reviewer-δ. Critique for safety, legality, quality, and goal fit. Return JSON: {approved:true|false, issues:[], fixes:[], final_summary:\"...\"}. Be strict but practical.\",\n      \"Review the Builder-γ artifact with context.\"\n    )\n  }\n}];\n"
+      },
+      "id": "5",
+      "name": "Assemble Agent Prompts",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        920,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "headerAuth",
+        "sendBody": true,
+        "jsonParameters": true,
+        "options": {},
+        "specifyAuthentication": "headerAuth",
+        "headerAuth": {
+          "name": "Authorization",
+          "value": "={{'Bearer ' + $env.OPENAI_API_KEY}}"
+        },
+        "queryParametersUi": {
+          "parameter": []
+        },
+        "headersUi": {
+          "parameter": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "bodyParametersJson": "={{$json.researcher}}"
+      },
+      "id": "6",
+      "name": "Researcher-α (OpenAI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1160,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse OpenAI response into JSON\nconst text = $json.choices?.[0]?.message?.content ?? '{}';\nlet parsed;\ntry { parsed = JSON.parse(text); } catch(e) { parsed = { raw: text }; }\nreturn [{ json: { researcher: parsed } }];\n"
+      },
+      "id": "7",
+      "name": "Researcher: Parse",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "headerAuth",
+        "sendBody": true,
+        "jsonParameters": true,
+        "specifyAuthentication": "headerAuth",
+        "headerAuth": {
+          "name": "Authorization",
+          "value": "={{'Bearer ' + $env.OPENAI_API_KEY}}"
+        },
+        "headersUi": {
+          "parameter": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "bodyParametersJson": "={{$json.$prevNode[\"Assemble Agent Prompts\"].strategist}}"
+      },
+      "id": "8",
+      "name": "Strategist-β (OpenAI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1160,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const text = $json.choices?.[0]?.message?.content ?? '{}';\nlet parsed;\ntry { parsed = JSON.parse(text); } catch(e) { parsed = { raw: text }; }\nreturn [{ json: { strategist: parsed } }];\n"
+      },
+      "id": "9",
+      "name": "Strategist: Parse",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "headerAuth",
+        "sendBody": true,
+        "jsonParameters": true,
+        "specifyAuthentication": "headerAuth",
+        "headerAuth": {
+          "name": "Authorization",
+          "value": "={{'Bearer ' + $env.OPENAI_API_KEY}}"
+        },
+        "headersUi": {
+          "parameter": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "bodyParametersJson": "={{$json.$prevNode[\"Assemble Agent Prompts\"].builder}}"
+      },
+      "id": "10",
+      "name": "Builder-γ (OpenAI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1160,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const text = $json.choices?.[0]?.message?.content ?? '{}';\nlet parsed;\ntry { parsed = JSON.parse(text); } catch(e) { parsed = { raw: text }; }\nreturn [{ json: { builder: parsed } }];\n"
+      },
+      "id": "11",
+      "name": "Builder: Parse",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "headerAuth",
+        "sendBody": true,
+        "jsonParameters": true,
+        "specifyAuthentication": "headerAuth",
+        "headerAuth": {
+          "name": "Authorization",
+          "value": "={{'Bearer ' + $env.OPENAI_API_KEY}}"
+        },
+        "headersUi": {
+          "parameter": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "bodyParametersJson": "={{$json.$prevNode[\"Assemble Agent Prompts\"].reviewer}}"
+      },
+      "id": "12",
+      "name": "Reviewer-δ (OpenAI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1160,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const text = $json.choices?.[0]?.message?.content ?? '{}';\nlet parsed;\ntry { parsed = JSON.parse(text); } catch(e) { parsed = { raw: text }; }\nreturn [{ json: { reviewer: parsed } }];\n"
+      },
+      "id": "13",
+      "name": "Reviewer: Parse",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.reviewer.approved === true}}"
+            }
+          ]
+        }
+      },
+      "id": "14",
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1620,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Assemble final output when approved\nreturn [{\n  json: {\n    status: \"approved\",\n    sessionId: $json.meta?.sessionId,\n    insights: $json.researcher?.insights,\n    sources: $json.researcher?.sources,\n    plan: $json.strategist?.plan,\n    artifact: $json.builder?.artifact,\n    artifact_type: $json.builder?.artifact_type,\n    summary: $json.reviewer?.final_summary,\n    timestamp: new Date().toISOString()\n  }\n}];\n"
+      },
+      "id": "15",
+      "name": "Assemble Final (OK)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Return issues & fixes when not approved\nreturn [{\n  json: {\n    status: \"changes_requested\",\n    sessionId: $json.meta?.sessionId,\n    issues: $json.reviewer?.issues || [],\n    fixes: $json.reviewer?.fixes || [],\n    partial: {\n      insights: $json.researcher?.insights,\n      plan: $json.strategist?.plan,\n      artifact: $json.builder?.artifact\n    },\n    timestamp: new Date().toISOString()\n  }\n}];\n"
+      },
+      "id": "16",
+      "name": "Assemble Final (Revise)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataStoreId": "={{$env.SWARM_DATASTORE_ID}}",
+        "key": "={{$json.sessionId || $json.meta?.sessionId}}",
+        "value": "={{$json}}"
+      },
+      "id": "17",
+      "name": "History: Upsert",
+      "type": "n8n-nodes-base.dataStore",
+      "typeVersion": 1,
+      "position": [
+        2060,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "responseBody": "={{$json}}",
+        "responseCode": 200
+      },
+      "id": "18",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2280,
+        220
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook In": {
+      "main": [
+        [
+          {
+            "node": "Init Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Init Context": {
+      "main": [
+        [
+          {
+            "node": "History: Get",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "History: Get": {
+      "main": [
+        [
+          {
+            "node": "History: Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "History: Merge": {
+      "main": [
+        [
+          {
+            "node": "Assemble Agent Prompts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assemble Agent Prompts": {
+      "main": [
+        [
+          {
+            "node": "Researcher-α (OpenAI)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Strategist-β (OpenAI)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Builder-γ (OpenAI)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reviewer-δ (OpenAI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Researcher-α (OpenAI)": {
+      "main": [
+        [
+          {
+            "node": "Researcher: Parse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Strategist-β (OpenAI)": {
+      "main": [
+        [
+          {
+            "node": "Strategist: Parse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Builder-γ (OpenAI)": {
+      "main": [
+        [
+          {
+            "node": "Builder: Parse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reviewer-δ (OpenAI)": {
+      "main": [
+        [
+          {
+            "node": "Reviewer: Parse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Researcher: Parse": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Strategist: Parse": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Builder: Parse": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reviewer: Parse": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Assemble Final (OK)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Assemble Final (Revise)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assemble Final (OK)": {
+      "main": [
+        [
+          {
+            "node": "History: Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assemble Final (Revise)": {
+      "main": [
+        [
+          {
+            "node": "History: Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "History: Upsert": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "d9d26751-464f-4958-b5f4-b65bfead09b7"
+  },
+  "settings": {
+    "saveExecutionProgress": true,
+    "executionOrder": "v1"
+  },
+  "staticData": null
+}

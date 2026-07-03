@@ -155,3 +155,5 @@ build-web/
 *.backup
 backup/
 archive/
+__pycache__/
+.env

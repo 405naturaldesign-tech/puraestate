@@ -47,8 +47,9 @@ def test_db_schema(test_db_engine):
     Create the test database schema.
     Runs once per test session.
     """
-    from backend.database import db
-    from backend.models import *  # noqa: F401, F403
+    import importlib
+    db = importlib.import_module("backend.database").db
+    importlib.import_module("backend.models")
 
     # Create all tables
     db.metadata.create_all(bind=test_db_engine)

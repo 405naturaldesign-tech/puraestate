@@ -1,0 +1,318 @@
+{
+  "name": "Whop Campaign Fulfillment (Profit Focus)",
+  "nodes": [
+    {
+      "id": "1",
+      "name": "Trigger (Cron)",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [200, 200],
+      "parameters": {
+        "cronExpression": "0 0 * * *",  
+        "timezone": "America/New_York"
+      }
+    },
+    {
+      "id": "2",
+      "name": "Fetch Whop Campaigns",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [400, 200],
+      "parameters": {
+        "url": "https://api.whop.com/campaigns",  
+        "method": "GET",
+        "authentication": "none",
+        "options": {
+          "queryParameters": {
+            "type": "clipping"  
+          },
+          "timeout": 10000
+        }
+      },
+      "notes": "Call the Whop API to pull active Content Rewards campaigns.\nReplace the URL with the correct endpoint and add authentication (e.g. bearer token) if required."
+    },
+    {
+      "id": "3",
+      "name": "Score & Select Top Campaigns",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [600, 200],
+      "parameters": {
+        "functionCode": "// Parse Whop campaigns and compute a profit score.\nconst campaigns = items[0].json.data || items[0].json;\n// Custom scoring: payout_per_1k * (remaining_budget / max_budget)\nconst scored = campaigns.map(c => {\n  const payout = parseFloat(c.payoutPer1k || c.payout_per_1k || 0);\n  const budget = parseFloat(c.remainingBudget || c.remaining_budget || c.budget || 0);\n  const score = payout * budget;\n  return { ...c, score };\n});\n// Sort by score descending and take top 5\nscored.sort((a,b) => b.score - a.score);\nreturn scored.slice(0, 5).map(campaign => ({ json: campaign }));"
+      },
+      "notes": "This node selects the most profitable clipping campaigns based on a simple profit score. Adjust the formula to include your own weighting."
+    },
+    {
+      "id": "4",
+      "name": "Loop Campaigns",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [800, 200],
+      "parameters": {
+        "batchSize": 1
+      },
+      "notes": "Iterate through each selected campaign."
+    },
+    {
+      "id": "5",
+      "name": "Search Trending Videos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1000, 200],
+      "parameters": {
+        "url": "https://www.googleapis.com/youtube/v3/search",  
+        "method": "GET",
+        "authentication": "none",
+        "options": {
+          "queryParameters": {
+            "part": "snippet",
+            "type": "video",
+            "maxResults": 10,
+            "order": "viewCount",
+            "q": "${$json.name || $json.title}",  
+            "key": "YOUR_YOUTUBE_API_KEY"  
+          }
+        }
+      },
+      "notes": "Fetch trending YouTube videos related to the campaign name or keyword. Replace the API key and adjust the search query."
+    },
+    {
+      "id": "6",
+      "name": "Pick Best Segment",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1200, 200],
+      "parameters": {
+        "functionCode": "// Select the first result. In production, use AI or heuristics to pick a segment.\nconst video = items[0].json.items ? items[0].json.items[0] : items[0].json;\nconst videoId = video.id.videoId || video.id;\n// Construct a payload for the clipper service\nreturn [{ json: { videoId, title: video.snippet.title, campaign: $json } }];"
+      },
+      "notes": "Extract the video ID and prepare a request for clipping. You can enhance this node to analyse transcripts and pick high‑engagement segments."
+    },
+    {
+      "id": "7",
+      "name": "Generate Clip & Caption",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1400, 200],
+      "parameters": {
+        "url": "https://example.com/clipper",  
+        "method": "POST",
+        "authentication": "none",
+        "options": {
+          "bodyContentType": "json",
+          "bodyParameters": {
+            "video_id": "{{$json.videoId}}",
+            "generate_captions": true
+          }
+        }
+      },
+      "notes": "Call your preferred clipper service or script (e.g. Klap API, custom script) to generate a short clip with captions. Replace the URL and parameters accordingly."
+    },
+    {
+      "id": "8",
+      "name": "Publish to Platforms",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1600, 200],
+      "parameters": {
+        "url": "https://api.upload-post.com/upload",  
+        "method": "POST",
+        "authentication": "none",
+        "options": {
+          "bodyContentType": "multipart/form-data",
+          "bodyParameters": {
+            "video_file": "={{$node[\"Generate Clip & Caption\"].binary}}",
+            "title": "{{$node[\"Generate Clip & Caption\"].json.title}}",
+            "description": "Clipped content for {{$json.campaign.name}}",
+            "platforms": "tiktok,instagram,youtube"
+          }
+        }
+      },
+      "notes": "Upload the generated clip to multiple platforms. You can replace this with platform‑specific nodes (e.g. TikTok API, Instagram, YouTube) or use a service like upload-post.com."
+    },
+    {
+      "id": "9",
+      "name": "Submit to Whop Reward",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1800, 200],
+      "parameters": {
+        "url": "https://api.whop.com/content-rewards/submit",  
+        "method": "POST",
+        "authentication": "none",
+        "options": {
+          "bodyContentType": "json",
+          "bodyParameters": {
+            "campaign_id": "{{$json.campaign.id}}",
+            "video_url": "{{$node[\"Publish to Platforms\"].json.uploadedUrl}}",
+            "title": "{{$node[\"Generate Clip & Caption\"].json.title}}"
+          }
+        }
+      },
+      "notes": "Submit your published video to the appropriate Whop content reward listing. Replace the endpoint and parameters to match Whop’s API."
+    },
+    {
+      "id": "10",
+      "name": "Update Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [2000, 200],
+      "parameters": {
+        "url": "https://hooks.airtable.com/api/v1/update",  
+        "method": "POST",
+        "authentication": "none",
+        "options": {
+          "bodyContentType": "json",
+          "bodyParameters": {
+            "table": "WhopCampaigns",
+            "campaign_id": "{{$json.campaign.id}}",
+            "status": "submitted",
+            "clip_url": "{{$node[\"Publish to Platforms\"].json.uploadedUrl}}",
+            "timestamp": "={{$now}}"
+          }
+        }
+      },
+      "notes": "Store the submission status and link in your data store (Airtable, Notion, Google Sheets, etc.). Adjust the URL and payload to your chosen database."
+    },
+    {
+      "id": "11",
+      "name": "Send Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [2200, 200],
+      "parameters": {
+        "url": "https://api.twilio.com/send-sms",  
+        "method": "POST",
+        "authentication": "none",
+        "options": {
+          "bodyContentType": "json",
+          "bodyParameters": {
+            "to": "+1234567890",  
+            "message": "Submitted clip for {{$json.campaign.name}}. Check dashboard for performance."
+          }
+        }
+      },
+      "notes": "Send yourself or your team a notification. Replace with Twilio or Slack or Email nodes."
+    }
+  ],
+  "connections": {
+    "Trigger (Cron)": {
+      "main": [
+        [
+          {
+            "node": "Fetch Whop Campaigns",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Whop Campaigns": {
+      "main": [
+        [
+          {
+            "node": "Score & Select Top Campaigns",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score & Select Top Campaigns": {
+      "main": [
+        [
+          {
+            "node": "Loop Campaigns",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Campaigns": {
+      "main": [
+        [
+          {
+            "node": "Search Trending Videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "nextBatch": [
+        [
+          {
+            "node": "Loop Campaigns",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Trending Videos": {
+      "main": [
+        [
+          {
+            "node": "Pick Best Segment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Best Segment": {
+      "main": [
+        [
+          {
+            "node": "Generate Clip & Caption",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Clip & Caption": {
+      "main": [
+        [
+          {
+            "node": "Publish to Platforms",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish to Platforms": {
+      "main": [
+        [
+          {
+            "node": "Submit to Whop Reward",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit to Whop Reward": {
+      "main": [
+        [
+          {
+            "node": "Update Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Metrics": {
+      "main": [
+        [
+          {
+            "node": "Send Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

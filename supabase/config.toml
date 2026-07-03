@@ -1,0 +1,24 @@
+[project]
+project_id = "cepnaljvkcperoecaxzu"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "storage", "graphql_public"]
+
+[db.migrations]
+directory = "./supabase/migrations"
+
+[functions]
+enabled = true
+directory = "./supabase/functions"
+
+[functions.composio-whatsapp]
+verify_jwt = false
+import_map = "./supabase/functions/import_map.json"
+
+[auth]
+enabled = true
+
+[storage]
+enabled = true

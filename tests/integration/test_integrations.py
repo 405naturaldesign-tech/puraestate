@@ -5,10 +5,19 @@ All external API calls are mocked.
 
 import sys
 import json
-import pytest
-from unittest.mock import MagicMock, patch, call
+from pathlib import Path
 
-sys.path.insert(0, "/home/tjdavis/integrations")
+import pytest
+from unittest.mock import MagicMock, patch
+
+# Add the integrations directory to the path (computed relative to this file)
+_proj_root = Path(__file__).resolve().parent.parent.parent
+integrations_path = str(_proj_root / "integrations")
+sys.path.insert(0, integrations_path)
+
+# Also add the project root so tests.fixtures.mocks is importable
+if str(_proj_root) not in sys.path:
+    sys.path.insert(0, str(_proj_root))
 
 from n8n_client import N8nClient
 from webhooks import WebhookManager, WebhookSubscription
@@ -19,6 +28,8 @@ from aws_s3 import AWSS3Client
 from stripe_payments import StripeClient
 from pipedrive_crm import PipedriveCRMClient
 from google_sheets import GoogleSheetsClient
+
+from tests.fixtures.mocks import mock_success_response, mock_failure_response
 
 
 SAMPLE_PROPERTY = {
@@ -36,7 +47,7 @@ SAMPLE_PROPERTY = {
     "bathrooms": 2.5,
     "total_area_sqm": 180.0,
     "amenities": ["pool", "gym"],
-    "contacts": [{"name": "Juan Pérez", "phone": "+50688881234", "email": "juan@example.com"}],
+    "contacts": [{"name": "Juan Pérez", "phone": "+506****1234", "email": "juan@example.com"}],
     "images": ["https://img.properati.com.cr/photo1.jpg"],
     "description": "Hermosa casa con vista a la ciudad, piscina y jardín.",
     "scraped_at": "2024-01-01T12:00:00",
@@ -55,32 +66,20 @@ class TestN8nClient:
             webhook_url="http://localhost:5678/webhook/",
         )
 
-    @patch("requests.Session.post")
     def test_trigger_webhook_success(self, mock_post):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.content = b'{"result": "ok"}'
-        mock_resp.json.return_value = {"result": "ok"}
-        mock_post.return_value = mock_resp
+        mock_post.return_value = mock_success_response({"result": "ok"})
 
         result = self.client.trigger_webhook("new-property", SAMPLE_PROPERTY)
         assert result == {"result": "ok"}
         mock_post.assert_called_once()
 
-    @patch("requests.Session.post")
     def test_trigger_webhook_failure_returns_none(self, mock_post):
-        mock_post.side_effect = Exception("Connection refused")
+        mock_post.side_effect = mock_failure_response()
         result = self.client.trigger_webhook("new-property", SAMPLE_PROPERTY)
         assert result is None
 
-    @patch("requests.Session.post")
     def test_notify_new_property(self, mock_post):
-        mock_resp = MagicMock(status_code=200)
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.content = b"{}"
-        mock_resp.json.return_value = {}
-        mock_post.return_value = mock_resp
+        mock_post.return_value = mock_success_response()
 
         self.client.notify_new_property(SAMPLE_PROPERTY)
         call_kwargs = mock_post.call_args
@@ -88,13 +87,8 @@ class TestN8nClient:
         assert payload["event"] == "new_property"
         assert payload["data"] == SAMPLE_PROPERTY
 
-    @patch("requests.Session.post")
     def test_notify_error(self, mock_post):
-        mock_resp = MagicMock(status_code=200)
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.content = b"{}"
-        mock_resp.json.return_value = {}
-        mock_post.return_value = mock_resp
+        mock_post.return_value = mock_success_response()
 
         self.client.notify_error("properati", "Connection timeout")
         payload = mock_post.call_args[1]["json"]
@@ -110,10 +104,8 @@ class TestWebhookManager:
     def setup_method(self):
         self.manager = WebhookManager(incoming_secret="test_secret")
 
-    @patch("requests.Session.post")
     def test_emit_delivers_to_subscriber(self, mock_post):
-        mock_resp = MagicMock(status_code=200)
-        mock_post.return_value = mock_resp
+        mock_post.return_value = mock_success_response()
 
         self.manager.subscribe("https://dest.example.com/hook", events=["new_property"])
         results = self.manager.emit("new_property", SAMPLE_PROPERTY)
@@ -121,7 +113,6 @@ class TestWebhookManager:
         assert "https://dest.example.com/hook" in results
         assert results["https://dest.example.com/hook"] is True
 
-    @patch("requests.Session.post")
     def test_emit_skips_inactive_subscription(self, mock_post):
         sub = self.manager.subscribe("https://dest.example.com/hook", events=["new_property"])
         sub.active = False
@@ -129,10 +120,8 @@ class TestWebhookManager:
         assert "https://dest.example.com/hook" not in results
         mock_post.assert_not_called()
 
-    @patch("requests.Session.post")
     def test_wildcard_subscription(self, mock_post):
-        mock_resp = MagicMock(status_code=200)
-        mock_post.return_value = mock_resp
+        mock_post.return_value = mock_success_response()
         self.manager.subscribe("https://dest.example.com/hook", events=["*"])
         results = self.manager.emit("any_event", {"data": "test"})
         assert results.get("https://dest.example.com/hook") is True
@@ -189,22 +178,18 @@ class TestSlackBot:
         can = bot._can_send()
         assert isinstance(can, bool)
 
-    @patch("requests.post")
-    def test_send_property_alert_via_webhook(self, mock_post):
-        mock_resp = MagicMock(status_code=200)
-        mock_post.return_value = mock_resp
+    def test_send_property_alert_via_webhook(self, mock_requests_post):
+        mock_requests_post.return_value = mock_success_response()
 
         bot = SlackBot(webhook_url="https://hooks.slack.com/test")
         if not bot._can_send():
             pytest.skip("Slack SDK not available")
 
         result = bot.send_property_alert(SAMPLE_PROPERTY)
-        assert mock_post.called
+        assert mock_requests_post.called
 
-    @patch("requests.post")
-    def test_send_daily_stats(self, mock_post):
-        mock_resp = MagicMock(status_code=200)
-        mock_post.return_value = mock_resp
+    def test_send_daily_stats(self, mock_requests_post):
+        mock_requests_post.return_value = mock_success_response()
 
         bot = SlackBot(webhook_url="https://hooks.slack.com/test")
         if not bot._can_send():
@@ -238,7 +223,7 @@ class TestWhatsAppClient:
         if not client._can_send():
             pytest.skip("Twilio not available")
 
-        result = client.send_property_alert("+50688881234", SAMPLE_PROPERTY)
+        result = client.send_property_alert("+506****1234", SAMPLE_PROPERTY)
         if result:
             call_kwargs = client._client.messages.create.call_args[1]
             assert "Casa moderna" in call_kwargs["body"]
@@ -248,7 +233,7 @@ class TestWhatsAppClient:
         client = WhatsAppClient(
             account_sid="ACtest",
             auth_token="test",
-            from_number="whatsapp:+14155238886",
+            from_number="whatsapp:+141****8886",
         )
         assert client.from_number.startswith("whatsapp:")
 
@@ -265,10 +250,9 @@ class TestAWSS3Client:
         result = client._can_use()
         assert isinstance(result, bool)
 
-    @patch("boto3.client")
-    def test_upload_image_success(self, mock_boto_client):
+    def test_upload_image_success(self, mock_boto3_client):
         mock_s3 = MagicMock()
-        mock_boto_client.return_value = mock_s3
+        mock_boto3_client.return_value = mock_s3
         mock_s3.put_object.return_value = {}
 
         client = AWSS3Client(bucket="test-bucket", region="us-east-1")
@@ -279,11 +263,10 @@ class TestAWSS3Client:
         assert "test-bucket" in url
         mock_s3.put_object.assert_called_once()
 
-    @patch("boto3.client")
-    def test_upload_image_client_error(self, mock_boto_client):
+    def test_upload_image_client_error(self, mock_boto3_client):
         from botocore.exceptions import ClientError
         mock_s3 = MagicMock()
-        mock_boto_client.return_value = mock_s3
+        mock_boto3_client.return_value = mock_s3
         mock_s3.put_object.side_effect = ClientError(
             {"Error": {"Code": "403", "Message": "Forbidden"}}, "PutObject"
         )
@@ -292,10 +275,9 @@ class TestAWSS3Client:
         url = client.upload_image(b"data", "key.jpg")
         assert url is None
 
-    @patch("boto3.client")
-    def test_backup_properties_json(self, mock_boto_client):
+    def test_backup_properties_json(self, mock_boto3_client):
         mock_s3 = MagicMock()
-        mock_boto_client.return_value = mock_s3
+        mock_boto3_client.return_value = mock_s3
         mock_s3.put_object.return_value = {}
 
         client = AWSS3Client(bucket="test-bucket")
@@ -399,52 +381,31 @@ class TestPipedriveCRMClient:
     def setup_method(self):
         self.client = PipedriveCRMClient(api_key="test_key")
 
-    @patch("requests.Session.post")
     def test_create_person(self, mock_post):
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {"data": {"id": 101}}
-        mock_post.return_value = mock_resp
+        mock_post.return_value = mock_success_response({"data": {"id": 101}})
 
         person_id = self.client._create_person({
             "name": "Juan Pérez",
-            "phone": "+50688881234",
+            "phone": "+506****1234",
             "email": "juan@example.com",
         })
         assert person_id == 101
 
-    @patch("requests.Session.post")
     def test_create_deal(self, mock_post):
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {"data": {"id": 202}}
-        mock_post.return_value = mock_resp
+        mock_post.return_value = mock_success_response({"data": {"id": 202}})
 
         deal_id = self.client._create_deal(SAMPLE_PROPERTY, person_id=101)
         assert deal_id == 202
 
-    @patch("requests.Session.get")
     def test_find_person_returns_none_on_empty(self, mock_get):
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {"data": {"items": []}}
-        mock_get.return_value = mock_resp
+        mock_get.return_value = mock_success_response({"data": {"items": []}})
 
         person_id = self.client._find_person({"email": "notfound@example.com"})
         assert person_id is None
 
-    @patch("requests.Session.post")
-    @patch("requests.Session.get")
     def test_sync_properties(self, mock_get, mock_post):
-        mock_get_resp = MagicMock(status_code=200)
-        mock_get_resp.raise_for_status = MagicMock()
-        mock_get_resp.json.return_value = {"data": {"items": []}}
-        mock_get.return_value = mock_get_resp
-
-        mock_post_resp = MagicMock(status_code=201)
-        mock_post_resp.raise_for_status = MagicMock()
-        mock_post_resp.json.return_value = {"data": {"id": 303}}
-        mock_post.return_value = mock_post_resp
+        mock_get.return_value = mock_success_response({"data": {"items": []}})
+        mock_post.return_value = mock_success_response({"data": {"id": 303}}, status_code=201)
 
         result = self.client.sync_properties([SAMPLE_PROPERTY])
         assert result["created"] == 1
@@ -476,7 +437,7 @@ class TestGoogleSheetsClient:
         row = self.client._property_to_row(SAMPLE_PROPERTY)
         phone_col_idx = 14  # 0-based: Contact Phone
         email_col_idx = 15
-        assert row[phone_col_idx] == "+50688881234"
+        assert row[phone_col_idx] == "+506****1234"
         assert row[email_col_idx] == "juan@example.com"
 
     def test_no_connect_needed_for_row_conversion(self):
@@ -499,9 +460,7 @@ class TestSendGridEmailClient:
 
     @patch("sendgrid.SendGridAPIClient.send")
     def test_send_property_alert(self, mock_send):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 202
-        mock_send.return_value = mock_resp
+        mock_send.return_value = mock_success_response(status_code=202)
 
         client = SendGridEmailClient(api_key="SG.test", from_email="from@test.com")
         if not client._can_send():
@@ -512,8 +471,7 @@ class TestSendGridEmailClient:
 
     @patch("sendgrid.SendGridAPIClient.send")
     def test_send_weekly_digest(self, mock_send):
-        mock_resp = MagicMock(status_code=202)
-        mock_send.return_value = mock_resp
+        mock_send.return_value = mock_success_response(status_code=202)
 
         client = SendGridEmailClient(api_key="SG.test")
         if not client._can_send():

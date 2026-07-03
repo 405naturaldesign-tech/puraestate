@@ -1,0 +1,34 @@
+{
+  "appName": "CopWatchAI",
+  "description": "AI-powered police accountability and incident reporting app",
+  "stack": {
+    "frontend": "React Native + Expo + Tailwind",
+    "backend": "Firebase + Node.js (optional for expansion)",
+    "aiIntegration": "OpenAI (GPT-4 + Whisper)",
+    "auth": "Firebase Auth",
+    "database": "Firestore",
+    "storage": "Firebase Storage",
+    "pdf": "RNHTMLtoPDF"
+  },
+  "modules": [
+    "Camera recording with Expo Camera",
+    "Transcription using Whisper API",
+    "Summary & Classification using GPT-4",
+    "Incident PDF Generation",
+    "Secure cloud backup with Firebase",
+    "Rights Assistant (AI prompt)",
+    "Severity scoring system",
+    "Report sharing/export",
+    "Subscription monetization via Stripe"
+  ],
+  "dependencies": [
+    "expo-camera",
+    "react-native-html-to-pdf",
+    "expo-sharing",
+    "@react-navigation/native",
+    "firebase",
+    "axios",
+    "expo-location"
+  ],
+  "instructions": "Install dependencies using `npm install`, configure Firebase, and place PDF generator function inside your `utils/pdf.js`."
+}

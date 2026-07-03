@@ -8,7 +8,8 @@ PuraEstate takes security seriously. This document outlines our security policie
 
 **Primary Security Contact:**
 - Email: security@puraestate.com
-- Response Time: 48 hours
+- Response Time: 24 hours
+- PGP Key: Available on request at security@puraestate.com with subject "PGP REQUEST"
 
 **Secondary Contact:**
 - Email: security-team@puraestate.com

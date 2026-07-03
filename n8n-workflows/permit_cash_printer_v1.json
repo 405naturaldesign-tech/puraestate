@@ -1,0 +1,401 @@
+{
+  "name": "Permit Cash Printer v1",
+  "nodes": [
+    {
+      "parameters": {
+        "cronExpression": "*/30 * * * *"
+      },
+      "id": "Cron",
+      "name": "Cron - every 30 min",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "CITY_1_PERMITS_URL",
+              "value": "https://data.city1.gov/permits?status=issued"
+            },
+            {
+              "name": "CITY_2_PERMITS_URL",
+              "value": "https://data.city2.gov/permits?status=issued"
+            },
+            {
+              "name": "TRADE_KEYWORDS",
+              "value": "striping|sealcoat|paving|glass|hvac|clean|tenant improvement|parking"
+            },
+            {
+              "name": "MARKET_NAME",
+              "value": "OKC Metro"
+            },
+            {
+              "name": "SAMPLE_LEADS_TO_SEND",
+              "value": "3"
+            },
+            {
+              "name": "PRICE_PER_METRO",
+              "value": "149"
+            },
+            {
+              "name": "STRIPE_PAYMENT_LINK",
+              "value": "https://buy.stripe.com/test_XXXXXXXXXXXX"
+            },
+            {
+              "name": "OUTBOUND_LIST_CSV",
+              "value": "gsheet://YourSpreadsheetName/LeadsOut"
+            },
+            {
+              "name": "FULL_DATA_CSV",
+              "value": "gsheet://YourSpreadsheetName/LeadsFull"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "EnvVars",
+      "name": "Config Vars",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [
+        400,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "\n// Combine multiple city endpoints; allows JSON or HTML feed URLs.\nconst urls = [\n  $json['CITY_1_PERMITS_URL'],\n  $json['CITY_2_PERMITS_URL']\n].filter(Boolean);\nreturn urls.map(u => ({json: {url: u}}));\n"
+      },
+      "id": "PrepURLs",
+      "name": "Prep URLs",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        600,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$json[\"url\"]}}",
+        "responseFormat": "string",
+        "options": {
+          "followRedirect": true
+        }
+      },
+      "id": "Fetch",
+      "name": "Fetch Permit Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        800,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "\n/**\n * Attempts to parse either JSON (CKAN/Socrata style) or HTML tables into a normalized list of permits.\n * For HTML, looks for rows with columns like Address, Description, IssueDate.\n */\nconst input = items[0].json;\nconst body = input.body || input; // http node returns body in .json.body (string)\nlet permits = [];\ntry {\n  const data = typeof body === 'string' ? JSON.parse(body) : body;\n  // Try common Socrata format\n  if (Array.isArray(data)) {\n    // Assume array of permit objects\n    permits = data;\n  } else if (data && data.data && Array.isArray(data.data)) {\n    permits = data.data;\n  }\n} catch(e){\n  // Fallback: naive HTML parse via regex (works for simple <tr><td>)\n  const html = String(body);\n  const rows = html.split(/<tr[^>]*>/i).slice(1);\n  for (const r of rows) {\n    const tds = r.split(/<td[^>]*>/i).slice(1).map(x => x.replace(/<[^>]+>/g,'').trim());\n    if (tds.length >= 3) {\n      permits.push({\n        address: tds[0],\n        description: tds[1],\n        issued: tds[2],\n      });\n    }\n  }\n}\n\nreturn permits.map(p => ({json: {raw: p}}));\n"
+      },
+      "id": "Parse",
+      "name": "Parse to Permits",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "\n/**\n * Normalize fields to: address, project, issued_at, city, contact_url\n */\nfunction pick(obj, keys){\n  const out={};\n  for (const k of keys){\n    if (obj[k]!==undefined) out[k]=obj[k];\n  }\n  return out;\n}\nconst tradeRegex = new RegExp($item(0).$node[\"Config Vars\"].json[\"TRADE_KEYWORDS\"], 'i');\nconst city = $item(0).$node[\"Config Vars\"].json[\"MARKET_NAME\"];\nconst normalized = [];\n\nfor (const item of items){\n  const r = item.json.raw;\n  const rec = {\n    address: r.address || r.Address || r.site_address || r.location || r['Site Address'] || '',\n    project: r.description || r.Description || r.work_description || r['Work Description'] || '',\n    issued_at: r.issued || r.issue_date || r['Issue Date'] || r.permit_issued_date || '',\n    permit_no: r.permit || r.permit_number || r['Permit Number'] || '',\n    city\n  };\n  // Filter to trades of interest\n  if ((rec.project||'').match(tradeRegex)){\n    normalized.push({json: rec});\n  }\n}\nreturn normalized;\n"
+      },
+      "id": "NormalizeFilter",
+      "name": "Normalize + Filter by Trade",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "\n// De-dupe by (permit_no || address+project+issued_at) using a simple in-memory cache\n// For production, use Redis node or a Database node.\nconst seen = (global.get('seenPermits') || new Set());\nconst out = [];\nfor (const item of items){\n  const j = item.json;\n  const key = (j.permit_no || (j.address+'|'+j.project+'|'+j.issued_at)).toLowerCase();\n  if (!seen.has(key)){\n    seen.add(key);\n    out.push(item);\n  }\n}\nglobal.set('seenPermits', seen);\nreturn out;\n"
+      },
+      "id": "DeDupe",
+      "name": "De-dup",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentFormat": "raw",
+        "url": "={{$item(0).$node[\"Config Vars\"].json[\"FULL_DATA_CSV\"]}}",
+        "options": {}
+      },
+      "id": "WriteFull",
+      "name": "Write \u2192 Google Sheet (Full)",
+      "type": "n8n-nodes-base.csvFile",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "\n// Prepare a teaser list (first N) for outbound email/DM.\nconst N = parseInt($item(0).$node[\"Config Vars\"].json[\"SAMPLE_LEADS_TO_SEND\"]) || 3;\nreturn items.slice(0, N);\n"
+      },
+      "id": "TeaserSlice",
+      "name": "Slice Teaser N",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "",
+        "toEmail": "=",
+        "subject": "={{$item(0).$node[\"Config Vars\"].json[\"MARKET_NAME\"]}} Fresh {{new Date().toLocaleDateString()}} Permit Leads ({{$item(0).$node[\"Config Vars\"].json[\"SAMPLE_LEADS_TO_SEND\"]}} free sample)",
+        "text": "={{`Hey there,\n\nHere are ${$item(0).$node[\"Config Vars\"].json[\"SAMPLE_LEADS_TO_SEND\"]} fresh ` + $item(0).$node[\"Config Vars\"].json[\"MARKET_NAME\"] + ` permit-based opportunities matching your trade:\n\n`}}",
+        "additionalFields": {
+          "text2": "={{$json.address + ' \u2014 ' + $json.project + ' \u2014 Issued: ' + $json.issued_at}}"
+        }
+      },
+      "id": "EmailTeaser",
+      "name": "Email Teaser (Gmail)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 3,
+      "position": [
+        2000,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "\n// Build CTA with Stripe payment link\nconst price = $item(0).$node[\"Config Vars\"].json[\"PRICE_PER_METRO\"];\nconst link = $item(0).$node[\"Config Vars\"].json[\"STRIPE_PAYMENT_LINK\"];\nreturn [{\n  json: {\n    message: `Unlock full weekly sheet for ${$item(0).$node[\"Config Vars\"].json[\"MARKET_NAME\"]}: $${price}/mo \u2192 ${link}`\n  }\n}];\n"
+      },
+      "id": "CTA",
+      "name": "Build CTA",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "",
+        "toEmail": "=",
+        "subject": "={{$item(0).$node[\"Config Vars\"].json[\"MARKET_NAME\"]}} \u2013 Get the Full Leads Sheet (Stripe Link Inside)",
+        "text": "={{$json.message}}"
+      },
+      "id": "EmailCTA",
+      "name": "Email CTA (Gmail)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 3,
+      "position": [
+        2000,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "path": "stripe/payment-success",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "WebhookStripe",
+      "name": "Webhook: Stripe Success",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "lookup",
+        "documentFormat": "raw",
+        "url": "={{$item(0).$node[\"Config Vars\"].json[\"FULL_DATA_CSV\"]}}"
+      },
+      "id": "ReadFull",
+      "name": "Read Full Sheet",
+      "type": "n8n-nodes-base.csvFile",
+      "typeVersion": 1,
+      "position": [
+        1800,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "",
+        "toEmail": "={{$json.query.email || 'buyer@example.com'}}",
+        "subject": "Full Permit Leads Sheet \u2013 Access Granted",
+        "text": "={{'Thanks for your purchase! Here is your full leads sheet for ' + $item(0).$node[\"Config Vars\"].json[\"MARKET_NAME\"] + '.\\n\\n' + 'Google Sheet: ' + $item(0).$node[\"Config Vars\"].json[\"FULL_DATA_CSV\"] + '\\n\\nStay winning.'}}"
+      },
+      "id": "DeliverFull",
+      "name": "Deliver Full Access (Gmail)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 3,
+      "position": [
+        2000,
+        540
+      ]
+    }
+  ],
+  "connections": {
+    "Cron - every 30 min": {
+      "main": [
+        [
+          {
+            "node": "Config Vars",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config Vars": {
+      "main": [
+        [
+          {
+            "node": "Prep URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prep URLs": {
+      "main": [
+        [
+          {
+            "node": "Fetch Permit Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Permit Page": {
+      "main": [
+        [
+          {
+            "node": "Parse to Permits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse to Permits": {
+      "main": [
+        [
+          {
+            "node": "Normalize + Filter by Trade",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize + Filter by Trade": {
+      "main": [
+        [
+          {
+            "node": "De-dup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "De-dup": {
+      "main": [
+        [
+          {
+            "node": "Write \u2192 Google Sheet (Full)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Slice Teaser N",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build CTA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slice Teaser N": {
+      "main": [
+        [
+          {
+            "node": "Email Teaser (Gmail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build CTA": {
+      "main": [
+        [
+          {
+            "node": "Email CTA (Gmail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Stripe Success": {
+      "main": [
+        [
+          {
+            "node": "Read Full Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Full Sheet": {
+      "main": [
+        [
+          {
+            "node": "Deliver Full Access (Gmail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "meta": {
+    "version": "1.0",
+    "notes": "Import into n8n. Configure Gmail creds, Stripe payment link, and Google Sheets names. Replace CITY_* URLs with your local permit feeds."
+  },
+  "pinData": {}
+}

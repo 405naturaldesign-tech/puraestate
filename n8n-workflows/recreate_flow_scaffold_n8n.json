@@ -1,0 +1,165 @@
+{
+  "name": "Recreate-From-Recording : UI Macro Runner + Event Scraper",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "ManualTrigger",
+      "name": "Start (Manual)",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        140,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Map CSV 'steps' to actions\n// Expect JSON array in {{$json.steps}}\nreturn items;"
+      },
+      "id": "LoadSteps",
+      "name": "Load Steps (Function)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        360,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$env.UI_AUTOMATION_ENDPOINT}}/run",
+        "options": {
+          "bodyContentType": "json"
+        }
+      },
+      "id": "RunAgent",
+      "name": "Run UI Agent (HTTP)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        610,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "passThrough"
+      },
+      "id": "Passthrough",
+      "name": "Pass Data",
+      "type": "n8n-nodes-base.passThrough",
+      "typeVersion": 1,
+      "position": [
+        840,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Normalize events payload for downstream\nreturn items;"
+      },
+      "id": "Normalize",
+      "name": "Normalize Events",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "filename": "={{$env.S3_BUCKET}}/events/{{ $now }}.json",
+        "binaryData": false,
+        "fileContent": "={{ JSON.stringify($json) }}"
+      },
+      "id": "Archive",
+      "name": "Archive to S3 (Placeholder)",
+      "type": "n8n-nodes-base.writeBinaryFile",
+      "typeVersion": 2,
+      "position": [
+        1260,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "text": "={{$json.caption}}",
+        "additionalFields": {
+          "imageUrl": "={{$json.image_url}}"
+        }
+      },
+      "id": "Instagram",
+      "name": "Post to Instagram (Placeholder)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1480,
+        200
+      ]
+    }
+  ],
+  "connections": {
+    "Start (Manual)": {
+      "main": [
+        [
+          {
+            "node": "Load Steps (Function)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Steps (Function)": {
+      "main": [
+        [
+          {
+            "node": "Run UI Agent (HTTP)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run UI Agent (HTTP)": {
+      "main": [
+        [
+          {
+            "node": "Pass Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pass Data": {
+      "main": [
+        [
+          {
+            "node": "Normalize Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Events": {
+      "main": [
+        [
+          {
+            "node": "Archive to S3 (Placeholder)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Post to Instagram (Placeholder)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
